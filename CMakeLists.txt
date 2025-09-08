@@ -191,6 +191,10 @@ else(ROS_EDITION STREQUAL "ROS2")
   cmake_minimum_required(VERSION 3.14)
   project(livox_ros_driver2)
 
+  if(POLICY CMP0144)
+    cmake_policy(SET CMP0144 NEW)
+  endif()
+
   # Default to C99
   if(NOT CMAKE_C_STANDARD)
     set(CMAKE_C_STANDARD 99)
@@ -227,6 +231,7 @@ else(ROS_EDITION STREQUAL "ROS2")
   find_package(std_msgs REQUIRED)
   find_package(builtin_interfaces REQUIRED)
   find_package(rosidl_default_generators REQUIRED)
+  find_package(pcl_conversions REQUIRED)
 
   # check apr
   find_package(PkgConfig)
