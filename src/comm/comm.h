@@ -268,6 +268,7 @@ typedef struct {
   bool enable_angle_filter;
   float angle_filter_width;
   std::vector<float> angle_filter_centers;
+  float angle_filter_dist;
   volatile uint32_t set_bits;
   volatile uint32_t get_bits;
 } UserLivoxLidarConfig;

@@ -120,6 +120,12 @@ bool LivoxLidarConfigParser::ParseUserConfigs(const rapidjson::Document &doc,
         user_config.angle_filter_width = 0.0f;
       }
 
+      if (angle_filter.HasMember("distance") && angle_filter["distance"].IsNumber()) {
+        user_config.angle_filter_dist = angle_filter["distance"].GetFloat();
+      } else {
+        user_config.angle_filter_dist = 0.0f;
+      }
+
       if (angle_filter.HasMember("centers") && angle_filter["centers"].IsArray()) {
         for (auto &center : angle_filter["centers"].GetArray()) {
           if (center.IsNumber()) {

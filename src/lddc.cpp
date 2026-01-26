@@ -39,8 +39,12 @@
 
 namespace livox_ros {
 
-static bool IsPointFiltered(float x, float y, const UserLivoxLidarConfig& config) {
+static bool IsPointFiltered(float x, float y, float z, const UserLivoxLidarConfig& config) {
   if (!config.enable_angle_filter || config.angle_filter_centers.empty()) {
+    return false;
+  }
+  float dist_m = sqrt(x * x + y * y + z * z);
+  if (config.angle_filter_dist > 0.001f && dist_m > config.angle_filter_dist) {
     return false;
   }
   float angle = atan2(y, x) * 180.0f / PI;
@@ -335,7 +339,7 @@ void Lddc::InitPointcloud2Msg(const StoragePacket& pkg, PointCloud2& cloud, uint
 
   std::vector<LivoxPointXyzrtlt> points;
   for (size_t i = 0; i < pkg.points_num; ++i) {
-    if (IsPointFiltered(pkg.points[i].x, pkg.points[i].y, lds_->lidars_[index].livox_config)) {
+    if (IsPointFiltered(pkg.points[i].x, pkg.points[i].y, pkg.points[i].z, lds_->lidars_[index].livox_config)) {
       continue;
     }
     LivoxPointXyzrtlt point;
@@ -407,7 +411,7 @@ void Lddc::FillPointsToCustomMsg(CustomMsg& livox_msg, const StoragePacket& pkg,
   uint32_t points_num = pkg.points_num;
   const std::vector<PointXyzlt>& points = pkg.points;
   for (uint32_t i = 0; i < points_num; ++i) {
-    if (IsPointFiltered(points[i].x, points[i].y, lds_->lidars_[index].livox_config)) {
+    if (IsPointFiltered(points[i].x, points[i].y, points[i].z, lds_->lidars_[index].livox_config)) {
       continue;
     }
     CustomPoint point;
@@ -469,7 +473,7 @@ void Lddc::FillPointsToPclMsg(const StoragePacket& pkg, PointCloud& pcl_msg, uin
   uint32_t points_num = pkg.points_num;
   const std::vector<PointXyzlt>& points = pkg.points;
   for (uint32_t i = 0; i < points_num; ++i) {
-    if (IsPointFiltered(points[i].x, points[i].y, lds_->lidars_[index].livox_config)) {
+    if (IsPointFiltered(points[i].x, points[i].y, points[i].z, lds_->lidars_[index].livox_config)) {
       continue;
     }
     pcl::PointXYZI point;
