@@ -39,6 +39,23 @@
 
 namespace livox_ros {
 
+static bool IsPointFiltered(float x, float y, const UserLivoxLidarConfig& config) {
+  if (!config.enable_angle_filter || config.angle_filter_centers.empty()) {
+    return false;
+  }
+  float angle = atan2(y, x) * 180.0f / PI;
+  float width = config.angle_filter_width;
+  for (float center : config.angle_filter_centers) {
+    float diff = angle - center;
+    while (diff > 180.0f) diff -= 360.0f;
+    while (diff < -180.0f) diff += 360.0f;
+    if (fabs(diff) < width / 2.0f) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Lidar Data Distribute Control--------------------------------------------*/
 #ifdef BUILDING_ROS1
 Lddc::Lddc(int format, int multi_topic, int data_src, int output_type,
@@ -209,7 +226,7 @@ void Lddc::PublishPointcloud2(LidarDataQueue *queue, uint8_t index) {
 
     PointCloud2 cloud;
     uint64_t timestamp = 0;
-    InitPointcloud2Msg(pkg, cloud, timestamp);
+    InitPointcloud2Msg(pkg, cloud, timestamp, index);
     PublishPointcloud2Data(index, timestamp, cloud);
   }
 }
@@ -225,7 +242,7 @@ void Lddc::PublishCustomPointcloud(LidarDataQueue *queue, uint8_t index) {
 
     CustomMsg livox_msg;
     InitCustomMsg(livox_msg, pkg, index);
-    FillPointsToCustomMsg(livox_msg, pkg);
+    FillPointsToCustomMsg(livox_msg, pkg, index);
     PublishCustomPointData(livox_msg, index);
   }
 }
@@ -252,8 +269,8 @@ void Lddc::PublishPclMsg(LidarDataQueue *queue, uint8_t index) {
 
     PointCloud cloud;
     uint64_t timestamp = 0;
-    InitPclMsg(pkg, cloud, timestamp);
-    FillPointsToPclMsg(pkg, cloud);
+    InitPclMsg(pkg, cloud, timestamp, index);
+    FillPointsToPclMsg(pkg, cloud, index);
     PublishPclData(index, timestamp, cloud);
   }
   return;
@@ -295,7 +312,7 @@ void Lddc::InitPointcloud2MsgHeader(PointCloud2& cloud) {
   cloud.point_step = sizeof(LivoxPointXyzrtlt);
 }
 
-void Lddc::InitPointcloud2Msg(const StoragePacket& pkg, PointCloud2& cloud, uint64_t& timestamp) {
+void Lddc::InitPointcloud2Msg(const StoragePacket& pkg, PointCloud2& cloud, uint64_t& timestamp, uint8_t index) {
   InitPointcloud2MsgHeader(cloud);
 
   cloud.point_step = sizeof(LivoxPointXyzrtlt);
@@ -318,6 +335,9 @@ void Lddc::InitPointcloud2Msg(const StoragePacket& pkg, PointCloud2& cloud, uint
 
   std::vector<LivoxPointXyzrtlt> points;
   for (size_t i = 0; i < pkg.points_num; ++i) {
+    if (IsPointFiltered(pkg.points[i].x, pkg.points[i].y, lds_->lidars_[index].livox_config)) {
+      continue;
+    }
     LivoxPointXyzrtlt point;
     point.x = pkg.points[i].x;
     point.y = pkg.points[i].y;
@@ -328,8 +348,10 @@ void Lddc::InitPointcloud2Msg(const StoragePacket& pkg, PointCloud2& cloud, uint
     point.timestamp = static_cast<double>(pkg.points[i].offset_time);
     points.push_back(std::move(point));
   }
-  cloud.data.resize(pkg.points_num * sizeof(LivoxPointXyzrtlt));
-  memcpy(cloud.data.data(), points.data(), pkg.points_num * sizeof(LivoxPointXyzrtlt));
+  cloud.width = points.size();
+  cloud.row_step = cloud.width * cloud.point_step;
+  cloud.data.resize(points.size() * sizeof(LivoxPointXyzrtlt));
+  memcpy(cloud.data.data(), points.data(), points.size() * sizeof(LivoxPointXyzrtlt));
 }
 
 void Lddc::PublishPointcloud2Data(const uint8_t index, const uint64_t timestamp, const PointCloud2& cloud) {
@@ -381,10 +403,13 @@ void Lddc::InitCustomMsg(CustomMsg& livox_msg, const StoragePacket& pkg, uint8_t
   }
 }
 
-void Lddc::FillPointsToCustomMsg(CustomMsg& livox_msg, const StoragePacket& pkg) {
+void Lddc::FillPointsToCustomMsg(CustomMsg& livox_msg, const StoragePacket& pkg, uint8_t index) {
   uint32_t points_num = pkg.points_num;
   const std::vector<PointXyzlt>& points = pkg.points;
   for (uint32_t i = 0; i < points_num; ++i) {
+    if (IsPointFiltered(points[i].x, points[i].y, lds_->lidars_[index].livox_config)) {
+      continue;
+    }
     CustomPoint point;
     point.x = points[i].x;
     point.y = points[i].y;
@@ -396,6 +421,7 @@ void Lddc::FillPointsToCustomMsg(CustomMsg& livox_msg, const StoragePacket& pkg)
 
     livox_msg.points.push_back(std::move(point));
   }
+  livox_msg.point_num = livox_msg.points.size();
 }
 
 void Lddc::PublishCustomPointData(const CustomMsg& livox_msg, const uint8_t index) {
@@ -416,7 +442,7 @@ void Lddc::PublishCustomPointData(const CustomMsg& livox_msg, const uint8_t inde
   }
 }
 
-void Lddc::InitPclMsg(const StoragePacket& pkg, PointCloud& cloud, uint64_t& timestamp) {
+void Lddc::InitPclMsg(const StoragePacket& pkg, PointCloud& cloud, uint64_t& timestamp, uint8_t index) {
 #ifdef BUILDING_ROS1
   cloud.header.frame_id.assign(frame_id_);
   cloud.height = 1;
@@ -434,7 +460,7 @@ void Lddc::InitPclMsg(const StoragePacket& pkg, PointCloud& cloud, uint64_t& tim
   return;
 }
 
-void Lddc::FillPointsToPclMsg(const StoragePacket& pkg, PointCloud& pcl_msg) {
+void Lddc::FillPointsToPclMsg(const StoragePacket& pkg, PointCloud& pcl_msg, uint8_t index) {
 #ifdef BUILDING_ROS1
   if (pkg.points.empty()) {
     return;
@@ -443,6 +469,9 @@ void Lddc::FillPointsToPclMsg(const StoragePacket& pkg, PointCloud& pcl_msg) {
   uint32_t points_num = pkg.points_num;
   const std::vector<PointXyzlt>& points = pkg.points;
   for (uint32_t i = 0; i < points_num; ++i) {
+    if (IsPointFiltered(points[i].x, points[i].y, lds_->lidars_[index].livox_config)) {
+      continue;
+    }
     pcl::PointXYZI point;
     point.x = points[i].x;
     point.y = points[i].y;
@@ -451,6 +480,7 @@ void Lddc::FillPointsToPclMsg(const StoragePacket& pkg, PointCloud& pcl_msg) {
 
     pcl_msg.points.push_back(std::move(point));
   }
+  pcl_msg.width = pcl_msg.points.size();
 #elif defined BUILDING_ROS2
   std::cout << "warning: pcl::PointCloud is not supported in ROS2, "
             << "please check code logic" 

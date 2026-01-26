@@ -265,6 +265,9 @@ typedef struct {
   int32_t blind_spot_set;
   int8_t dual_emit_en;
   ExtParameter extrinsic_param;
+  bool enable_angle_filter;
+  float angle_filter_width;
+  std::vector<float> angle_filter_centers;
   volatile uint32_t set_bits;
   volatile uint32_t get_bits;
 } UserLivoxLidarConfig;

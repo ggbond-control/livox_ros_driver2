@@ -102,6 +102,32 @@ bool LivoxLidarConfigParser::ParseUserConfigs(const rapidjson::Document &doc,
                   << IpNumToString(user_config.handle) << std::endl;
       }
     }
+    if (!config.HasMember("angle_filter")) {
+      user_config.enable_angle_filter = false;
+      user_config.angle_filter_width = 0.0f;
+      user_config.angle_filter_centers.clear();
+    } else {
+      auto &angle_filter = config["angle_filter"];
+      if (angle_filter.HasMember("enable") && angle_filter["enable"].IsBool()) {
+        user_config.enable_angle_filter = angle_filter["enable"].GetBool();
+      } else {
+        user_config.enable_angle_filter = true; // default true if member exists
+      }
+
+      if (angle_filter.HasMember("width") && angle_filter["width"].IsNumber()) {
+        user_config.angle_filter_width = angle_filter["width"].GetFloat();
+      } else {
+        user_config.angle_filter_width = 0.0f;
+      }
+
+      if (angle_filter.HasMember("centers") && angle_filter["centers"].IsArray()) {
+        for (auto &center : angle_filter["centers"].GetArray()) {
+          if (center.IsNumber()) {
+            user_config.angle_filter_centers.push_back(center.GetFloat());
+          }
+        }
+      }
+    }
     user_config.set_bits = 0;
     user_config.get_bits = 0;
 
