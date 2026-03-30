@@ -71,9 +71,6 @@ Lddc::Lddc(int format, int multi_topic, int data_src, int output_type,
       output_type_(output_type),
       publish_frq_(frq),
       frame_id_(frame_id),
-      merged_cache_slot_time_(0),
-      merged_cache_initialized_(false),
-      merged_packets_cache_(kMaxSourceLidar),
       enable_lidar_bag_(lidar_bag),
       enable_imu_bag_(imu_bag) {
   publish_period_ns_ = kNsPerSecond / publish_frq_;
@@ -94,10 +91,7 @@ Lddc::Lddc(int format, int multi_topic, int data_src, int output_type,
       data_src_(data_src),
       output_type_(output_type),
       publish_frq_(frq),
-      frame_id_(frame_id),
-      merged_cache_slot_time_(0),
-      merged_cache_initialized_(false),
-      merged_packets_cache_(kMaxSourceLidar) {
+      frame_id_(frame_id) {
   publish_period_ns_ = kNsPerSecond / publish_frq_;
   lds_ = nullptr;
 #if 0
@@ -157,37 +151,28 @@ void Lddc::DistributePointCloudData(void) {
   lds_->pcd_semaphore_.Wait();
 
   if (use_multi_topic_ == 0 && merge_lidars_ == 1) {
+    std::vector<StoragePacket> pkts(lds_->lidar_count_);
+    bool has_data = false;
     for (uint32_t i = 0; i < lds_->lidar_count_; i++) {
       LidarDevice *lidar = &lds_->lidars_[i];
       LidarDataQueue *p_queue = &lidar->data;
       if ((kConnectStateSampling != lidar->connect_state) || p_queue == nullptr ||
-          p_queue->storage_packet == nullptr) {
+          p_queue->storage_packet == nullptr || QueueIsEmpty(p_queue)) {
         continue;
       }
+      QueuePop(p_queue, &pkts[i]);
+      if (!pkts[i].points.empty()) {
+        has_data = true;
+      }
+    }
 
-      while (!lds_->IsRequestExit() && !QueueIsEmpty(p_queue)) {
-        StoragePacket pkt;
-        QueuePop(p_queue, &pkt);
-        if (pkt.points.empty()) {
-          continue;
-        }
-
-        uint64_t packet_timebase = GetPacketTimebase(pkt, static_cast<uint8_t>(i));
-        if (packet_timebase == 0) {
-          continue;
-        }
-        uint64_t slot_time = (packet_timebase / publish_period_ns_) * publish_period_ns_;
-
-        if (!merged_cache_initialized_) {
-          merged_cache_initialized_ = true;
-          merged_cache_slot_time_ = slot_time;
-        } else if (slot_time > merged_cache_slot_time_) {
-          FlushMergedCache();
-          merged_cache_initialized_ = true;
-          merged_cache_slot_time_ = slot_time;
-        }
-
-        AccumulatePacketToMergedCache(i, pkt);
+    if (has_data) {
+      if (kPointCloud2Msg == transfer_format_) {
+        PublishMergedPointcloud2(pkts);
+      } else if (kLivoxCustomMsg == transfer_format_) {
+        PublishMergedCustomPointcloud(pkts);
+      } else if (kPclPxyziMsg == transfer_format_) {
+        PublishMergedPclMsg(pkts);
       }
     }
   } else {
@@ -258,7 +243,6 @@ void Lddc::PrepareExit(void) {
     bag_ = nullptr;
   }
 #endif
-  FlushMergedCache();
   if (lds_) {
     lds_->PrepareExit();
     lds_ = nullptr;
@@ -470,25 +454,6 @@ void Lddc::PublishMergedPclMsg(std::vector<StoragePacket>& pkts) {
 #endif
 }
 
-void Lddc::ResetMergedCache() {
-  merged_cache_initialized_ = false;
-  merged_cache_slot_time_ = 0;
-  for (auto &pkt : merged_packets_cache_) {
-    pkt.base_time = 0;
-    pkt.points_num = 0;
-    pkt.points.clear();
-  }
-}
-
-bool Lddc::HasMergedCacheData() const {
-  for (const auto &pkt : merged_packets_cache_) {
-    if (!pkt.points.empty()) {
-      return true;
-    }
-  }
-  return false;
-}
-
 uint64_t Lddc::GetPacketTimebase(const StoragePacket& pkt, uint8_t index) const {
   uint64_t timebase = 0;
   for (uint32_t i = 0; i < pkt.points_num; ++i) {
@@ -520,38 +485,6 @@ uint64_t Lddc::GetMergedPacketsTimebase(const std::vector<StoragePacket>& pkts) 
     }
   }
   return timebase;
-}
-
-void Lddc::AccumulatePacketToMergedCache(uint32_t lidar_id, StoragePacket& pkt) {
-  StoragePacket &cached_pkt = merged_packets_cache_[lidar_id];
-  if (cached_pkt.points.empty()) {
-    cached_pkt = std::move(pkt);
-    return;
-  }
-
-  if (pkt.base_time < cached_pkt.base_time) {
-    cached_pkt.base_time = pkt.base_time;
-  }
-  cached_pkt.points.insert(cached_pkt.points.end(),
-      std::make_move_iterator(pkt.points.begin()),
-      std::make_move_iterator(pkt.points.end()));
-  cached_pkt.points_num = cached_pkt.points.size();
-}
-
-void Lddc::FlushMergedCache() {
-  if (!HasMergedCacheData()) {
-    ResetMergedCache();
-    return;
-  }
-
-  if (kPointCloud2Msg == transfer_format_) {
-    PublishMergedPointcloud2(merged_packets_cache_);
-  } else if (kLivoxCustomMsg == transfer_format_) {
-    PublishMergedCustomPointcloud(merged_packets_cache_);
-  } else if (kPclPxyziMsg == transfer_format_) {
-    PublishMergedPclMsg(merged_packets_cache_);
-  }
-  ResetMergedCache();
 }
 
 void Lddc::InitPointcloud2MsgHeader(PointCloud2& cloud) {

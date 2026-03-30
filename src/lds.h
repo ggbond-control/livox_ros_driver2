@@ -64,6 +64,8 @@ class Lds {
 
   // get publishing frequency
   double GetLdsFrequency() { return publish_freq_; }
+  void SetMergeLidars(bool merge_lidars) { merge_lidars_ = merge_lidars; }
+  bool GetMergeLidars() const { return merge_lidars_; }
 
  public:
   uint8_t lidar_count_;                 /**< Lidar access handle. */
@@ -74,6 +76,7 @@ class Lds {
  protected:
   double publish_freq_;
   uint8_t data_src_;
+  bool merge_lidars_ = false;
  private:
   volatile bool request_exit_;
 };

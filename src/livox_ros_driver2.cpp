@@ -175,6 +175,7 @@ DriverNode::DriverNode(const rclcpp::NodeOptions & node_options)
     this->get_parameter("cmdline_input_bd_code", cmdline_bd_code);
 
     LdsLidar *read_lidar = LdsLidar::GetInstance(publish_freq);
+    read_lidar->SetMergeLidars(merge_lidars != 0);
     lddc_ptr_->RegisterLds(static_cast<Lds *>(read_lidar));
 
     if ((read_lidar->InitLdsLidar(user_config_path))) {

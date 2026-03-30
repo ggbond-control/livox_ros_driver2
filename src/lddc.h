@@ -107,12 +107,8 @@ class Lddc final {
   void PublishMergedPointcloud2(std::vector<StoragePacket>& pkts);
   void PublishMergedCustomPointcloud(std::vector<StoragePacket>& pkts);
   void PublishMergedPclMsg(std::vector<StoragePacket>& pkts);
-  void ResetMergedCache();
-  bool HasMergedCacheData() const;
   uint64_t GetPacketTimebase(const StoragePacket& pkt, uint8_t index) const;
   uint64_t GetMergedPacketsTimebase(const std::vector<StoragePacket>& pkts) const;
-  void AccumulatePacketToMergedCache(uint32_t lidar_id, StoragePacket& pkt);
-  void FlushMergedCache();
 
   void PublishImuData(LidarImuDataQueue& imu_data_queue, const uint8_t index);
 
@@ -150,9 +146,6 @@ class Lddc final {
   double publish_frq_;
   uint32_t publish_period_ns_;
   std::string frame_id_;
-  uint64_t merged_cache_slot_time_;
-  bool merged_cache_initialized_;
-  std::vector<StoragePacket> merged_packets_cache_;
 
 #ifdef BUILDING_ROS1
   bool enable_lidar_bag_;

@@ -85,7 +85,7 @@ class PubHandler {
   void Uninit();
   void RequestExit();
   void Init();
-  void SetPointCloudConfig(const double publish_freq);
+  void SetPointCloudConfig(const double publish_freq, bool merge_lidars = false);
   void SetPointCloudsCallback(PointCloudsCallback cb, void* client_data);
   void AddLidarsExtParam(LidarExtParameter& extrinsic_params);
   void ClearAllLidarsExtrinsicParams();
@@ -102,6 +102,7 @@ class PubHandler {
   //publish callback
   void CheckTimer(uint32_t id);
   void PublishPointCloud();
+  void PublishMergedPointCloud();
   static void OnLivoxLidarPointCloudCallback(uint32_t handle, const uint8_t dev_type,
                                              LivoxLidarEthernetPacket *data, void *client_data);
   
@@ -126,9 +127,12 @@ class PubHandler {
 
   std::map<uint32_t, std::unique_ptr<LidarPubHandler>> lidar_process_handlers_;
   std::map<uint32_t, std::vector<PointXyzlt>> points_;
+  std::vector<PointXyzlt> merged_points_;
   std::map<uint32_t, LidarExtParameter> lidar_extrinsics_;
   static std::atomic<bool> is_timestamp_sync_;
   uint16_t lidar_listen_id_ = 0;
+  bool merge_lidars_ = false;
+  bool merge_timer_initialized_ = false;
 };
 
 PubHandler &pub_handler();
