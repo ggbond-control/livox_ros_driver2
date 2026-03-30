@@ -24,8 +24,45 @@
 
 #include "parse_livox_lidar_cfg.h"
 #include <iostream>
+#include <cmath>
 
 namespace livox_ros {
+
+namespace {
+
+int32_t GetJsonInt32(const rapidjson::Value &value, const char *member_name, int32_t default_value) {
+  if (!value.HasMember(member_name)) {
+    return default_value;
+  }
+
+  const auto &member = value[member_name];
+  if (member.IsInt()) {
+    return static_cast<int32_t>(member.GetInt());
+  }
+  if (member.IsUint()) {
+    return static_cast<int32_t>(member.GetUint());
+  }
+  if (member.IsNumber()) {
+    return static_cast<int32_t>(std::lround(member.GetDouble()));
+  }
+
+  return default_value;
+}
+
+float GetJsonFloat(const rapidjson::Value &value, const char *member_name, float default_value) {
+  if (!value.HasMember(member_name)) {
+    return default_value;
+  }
+
+  const auto &member = value[member_name];
+  if (member.IsNumber()) {
+    return static_cast<float>(member.GetDouble());
+  }
+
+  return default_value;
+}
+
+}  // namespace
 
 bool LivoxLidarConfigParser::Parse(std::vector<UserLivoxLidarConfig> &lidar_configs) {
   FILE* raw_file = std::fopen(path_.c_str(), "rb");
@@ -151,36 +188,12 @@ bool LivoxLidarConfigParser::ParseUserConfigs(const rapidjson::Document &doc,
 
 bool LivoxLidarConfigParser::ParseExtrinsics(const rapidjson::Value &value,
                                              ExtParameter &param) {
-  if (!value.HasMember("roll")) {
-    param.roll = 0.0f;
-  } else {
-    param.roll = static_cast<float>(value["roll"].GetFloat());
-  }
-  if (!value.HasMember("pitch")) {
-    param.pitch = 0.0f;
-  } else {
-    param.pitch = static_cast<float>(value["pitch"].GetFloat());
-  }
-  if (!value.HasMember("yaw")) {
-    param.yaw = 0.0f;
-  } else {
-    param.yaw = static_cast<float>(value["yaw"].GetFloat());
-  }
-  if (!value.HasMember("x")) {
-    param.x = 0;
-  } else {
-    param.x = static_cast<int32_t>(value["x"].GetInt());
-  }
-  if (!value.HasMember("y")) {
-    param.y = 0;
-  } else {
-    param.y = static_cast<int32_t>(value["y"].GetInt());
-  }
-  if (!value.HasMember("z")) {
-    param.z = 0;
-  } else {
-    param.z = static_cast<int32_t>(value["z"].GetInt());
-  }
+  param.roll = GetJsonFloat(value, "roll", 0.0f);
+  param.pitch = GetJsonFloat(value, "pitch", 0.0f);
+  param.yaw = GetJsonFloat(value, "yaw", 0.0f);
+  param.x = GetJsonInt32(value, "x", 0);
+  param.y = GetJsonInt32(value, "y", 0);
+  param.z = GetJsonInt32(value, "z", 0);
 
   return true;
 }
