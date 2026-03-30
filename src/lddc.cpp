@@ -642,6 +642,23 @@ void Lddc::PublishCustomPointData(const CustomMsg& livox_msg, const uint8_t inde
   Publisher<CustomMsg>::SharedPtr publisher_ptr = std::dynamic_pointer_cast<Publisher<CustomMsg>>(GetCurrentPublisher(index));
 #endif
 
+  static uint32_t publish_log_seq = 0;
+  static uint64_t last_publish_time_ns = 0;
+  ++publish_log_seq;
+  if ((publish_log_seq % 10) == 1) {
+    uint64_t now_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    uint64_t delta_ns = (last_publish_time_ns == 0) ? 0 : (now_time_ns - last_publish_time_ns);
+    last_publish_time_ns = now_time_ns;
+    std::cout << "custom msg publish: seq=" << publish_log_seq
+              << ", point_num=" << livox_msg.point_num
+              << ", timebase=" << livox_msg.timebase
+              << ", header_stamp=" << livox_msg.header.stamp.sec << "."
+              << std::setw(9) << std::setfill('0') << livox_msg.header.stamp.nanosec
+              << ", delta_ms=" << (delta_ns / 1000000.0)
+              << std::setfill(' ') << std::endl;
+  }
+
   if (kOutputToRos == output_type_) {
     publisher_ptr->publish(livox_msg);
   } else {

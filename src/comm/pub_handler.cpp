@@ -32,10 +32,6 @@
 
 namespace livox_ros {
 
-namespace {
-constexpr uint32_t kMergePublishDebugEvery = 1;
-}
-
 std::atomic<bool> PubHandler::is_timestamp_sync_;
 
 PubHandler &pub_handler() {
@@ -73,9 +69,6 @@ void PubHandler::SetPointCloudConfig(const double publish_freq, bool merge_lidar
   publish_interval_ = (kNsPerSecond / (publish_freq * 10)) * 10;
   publish_interval_tolerance_ = publish_interval_ - kNsTolerantFrameTimeDeviation;
   publish_interval_ms_ = publish_interval_ / kRatioOfMsToNs;
-  std::cout << "PubHandler config: publish_freq=" << publish_freq
-            << "Hz, publish_interval_ns=" << publish_interval_
-            << ", merge_lidars=" << merge_lidars_ << std::endl;
   if (!point_process_thread_) {
     point_process_thread_ = std::make_shared<std::thread>(&PubHandler::RawDataProcess, this);
   }
@@ -175,14 +168,12 @@ void PubHandler::PublishMergedPointCloud() {
   uint64_t merged_timebase = std::numeric_limits<uint64_t>::max();
   uint32_t merged_handle = 0;
   bool has_points = false;
-  std::vector<std::pair<uint32_t, size_t>> lidar_point_stats;
 
   merged_points_.clear();
   for (auto &process_handler : lidar_process_handlers_) {
     uint32_t handle = process_handler.first;
     points_[handle].clear();
     process_handler.second->GetLidarPointClouds(points_[handle]);
-    lidar_point_stats.emplace_back(handle, points_[handle].size());
     if (points_[handle].empty()) {
       continue;
     }
@@ -198,8 +189,6 @@ void PubHandler::PublishMergedPointCloud() {
   }
 
   if (!has_points) {
-    std::cout << "merge publish skipped: no lidar points available, handlers="
-              << lidar_process_handlers_.size() << std::endl;
     return;
   }
 
@@ -217,21 +206,6 @@ void PubHandler::PublishMergedPointCloud() {
   lidar_point.points_num = merged_points_.size();
   lidar_point.points = merged_points_.data();
 
-  static uint32_t merge_publish_count = 0;
-  if ((merge_publish_count++ % kMergePublishDebugEvery) == 0) {
-    std::cout << "merge publish stats: lidar_num=" << lidar_process_handlers_.size()
-              << ", total_points=" << merged_points_.size()
-              << ", timebase=" << merged_timebase
-              << ", per_lidar_points=[";
-    for (size_t i = 0; i < lidar_point_stats.size(); ++i) {
-      std::cout << lidar_point_stats[i].first << ":" << lidar_point_stats[i].second;
-      if (i + 1 < lidar_point_stats.size()) {
-        std::cout << ", ";
-      }
-    }
-    std::cout << "]" << std::endl;
-  }
-
   PublishPointCloud();
   frame_.lidar_num = 0;
 }
@@ -242,17 +216,11 @@ void PubHandler::CheckTimer(uint32_t id) {
     if (!merge_timer_initialized_) {
       last_pub_time_ = now_time;
       merge_timer_initialized_ = true;
-      std::cout << "merge timer initialized: interval_ns=" << publish_interval_ << std::endl;
       return;
     }
     if (now_time - last_pub_time_ < std::chrono::nanoseconds(publish_interval_)) {
       return;
     }
-    auto delay_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now_time - last_pub_time_).count();
-    std::cout << "merge timer trigger: source_lidar=" << id
-              << ", elapsed_ns=" << delay_ns
-              << ", raw_queue_size=" << raw_packet_queue_.size()
-              << ", handlers=" << lidar_process_handlers_.size() << std::endl;
     last_pub_time_ += std::chrono::nanoseconds(publish_interval_);
     PublishMergedPointCloud();
     return;
