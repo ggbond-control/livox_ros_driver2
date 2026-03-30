@@ -73,10 +73,10 @@ class Lddc final {
  public:
 #ifdef BUILDING_ROS1
   Lddc(int format, int multi_topic, int data_src, int output_type, double frq,
-      std::string &frame_id, bool lidar_bag, bool imu_bag);
+      std::string &frame_id, bool lidar_bag, bool imu_bag, int merge_lidars = 0);
 #elif defined BUILDING_ROS2
   Lddc(int format, int multi_topic, int data_src, int output_type, double frq,
-      std::string &frame_id);
+      std::string &frame_id, int merge_lidars = 0);
 #endif
   ~Lddc();
 
@@ -103,6 +103,10 @@ class Lddc final {
   void PublishPointcloud2(LidarDataQueue *queue, uint8_t index);
   void PublishCustomPointcloud(LidarDataQueue *queue, uint8_t index);
   void PublishPclMsg(LidarDataQueue *queue, uint8_t index);
+
+  void PublishMergedPointcloud2(std::vector<StoragePacket>& pkts);
+  void PublishMergedCustomPointcloud(std::vector<StoragePacket>& pkts);
+  void PublishMergedPclMsg(std::vector<StoragePacket>& pkts);
 
   void PublishImuData(LidarImuDataQueue& imu_data_queue, const uint8_t index);
 
@@ -134,6 +138,7 @@ class Lddc final {
  private:
   uint8_t transfer_format_;
   uint8_t use_multi_topic_;
+  uint8_t merge_lidars_;
   uint8_t data_src_;
   uint8_t output_type_;
   double publish_frq_;

@@ -63,9 +63,10 @@ static bool IsPointFiltered(float x, float y, float z, const UserLivoxLidarConfi
 /** Lidar Data Distribute Control--------------------------------------------*/
 #ifdef BUILDING_ROS1
 Lddc::Lddc(int format, int multi_topic, int data_src, int output_type,
-    double frq, std::string &frame_id, bool lidar_bag, bool imu_bag)
+    double frq, std::string &frame_id, bool lidar_bag, bool imu_bag, int merge_lidars)
     : transfer_format_(format),
       use_multi_topic_(multi_topic),
+      merge_lidars_(merge_lidars),
       data_src_(data_src),
       output_type_(output_type),
       publish_frq_(frq),
@@ -83,9 +84,10 @@ Lddc::Lddc(int format, int multi_topic, int data_src, int output_type,
 }
 #elif defined BUILDING_ROS2
 Lddc::Lddc(int format, int multi_topic, int data_src, int output_type,
-           double frq, std::string &frame_id)
+           double frq, std::string &frame_id, int merge_lidars)
     : transfer_format_(format),
       use_multi_topic_(multi_topic),
+      merge_lidars_(merge_lidars),
       data_src_(data_src),
       output_type_(output_type),
       publish_frq_(frq),
@@ -147,14 +149,47 @@ void Lddc::DistributePointCloudData(void) {
   }
   
   lds_->pcd_semaphore_.Wait();
-  for (uint32_t i = 0; i < lds_->lidar_count_; i++) {
-    uint32_t lidar_id = i;
-    LidarDevice *lidar = &lds_->lidars_[lidar_id];
-    LidarDataQueue *p_queue = &lidar->data;
-    if ((kConnectStateSampling != lidar->connect_state) || (p_queue == nullptr)) {
-      continue;
+
+  if (use_multi_topic_ == 0 && merge_lidars_ == 1) {
+    while (!lds_->IsRequestExit()) {
+      std::vector<StoragePacket> pkts(lds_->lidar_count_);
+      bool has_data = false;
+      for (uint32_t i = 0; i < lds_->lidar_count_; i++) {
+        uint32_t lidar_id = i;
+        LidarDevice *lidar = &lds_->lidars_[lidar_id];
+        LidarDataQueue *p_queue = &lidar->data;
+        if ((kConnectStateSampling != lidar->connect_state) || (p_queue == nullptr)) {
+          continue;
+        }
+        if (!QueueIsEmpty(p_queue)) {
+          QueuePop(p_queue, &pkts[i]);
+          if (!pkts[i].points.empty()) {
+            has_data = true;
+          }
+        }
+      }
+      if (has_data) {
+        if (kPointCloud2Msg == transfer_format_) {
+          PublishMergedPointcloud2(pkts);
+        } else if (kLivoxCustomMsg == transfer_format_) {
+          PublishMergedCustomPointcloud(pkts);
+        } else if (kPclPxyziMsg == transfer_format_) {
+          PublishMergedPclMsg(pkts);
+        }
+      } else {
+        break;
+      }
     }
-    PollingLidarPointCloudData(lidar_id, lidar);    
+  } else {
+    for (uint32_t i = 0; i < lds_->lidar_count_; i++) {
+      uint32_t lidar_id = i;
+      LidarDevice *lidar = &lds_->lidars_[lidar_id];
+      LidarDataQueue *p_queue = &lidar->data;
+      if ((kConnectStateSampling != lidar->connect_state) || (p_queue == nullptr)) {
+        continue;
+      }
+      PollingLidarPointCloudData(lidar_id, lidar);    
+    }
   }
 }
 
@@ -278,6 +313,158 @@ void Lddc::PublishPclMsg(LidarDataQueue *queue, uint8_t index) {
     PublishPclData(index, timestamp, cloud);
   }
   return;
+}
+
+void Lddc::PublishMergedPointcloud2(std::vector<StoragePacket>& pkts) {
+  PointCloud2 cloud;
+  InitPointcloud2MsgHeader(cloud);
+  cloud.point_step = sizeof(LivoxPointXyzrtlt);
+  cloud.is_bigendian = false;
+  cloud.is_dense     = true;
+
+  std::vector<LivoxPointXyzrtlt> points;
+  uint64_t timestamp = 0;
+
+  for (size_t i = 0; i < pkts.size(); ++i) {
+    if (pkts[i].points.empty()) continue;
+    if (timestamp == 0) timestamp = pkts[i].base_time;
+
+    for (size_t j = 0; j < pkts[i].points_num; ++j) {
+      if (IsPointFiltered(pkts[i].points[j].x, pkts[i].points[j].y, pkts[i].points[j].z, lds_->lidars_[i].livox_config)) {
+        continue;
+      }
+      LivoxPointXyzrtlt point;
+      point.x = pkts[i].points[j].x;
+      point.y = pkts[i].points[j].y;
+      point.z = pkts[i].points[j].z;
+      point.reflectivity = pkts[i].points[j].intensity;
+      point.tag = pkts[i].points[j].tag;
+      point.line = pkts[i].points[j].line;
+      point.timestamp = static_cast<double>(pkts[i].points[j].offset_time);
+      points.push_back(std::move(point));
+    }
+  }
+
+  if (points.empty()) return;
+
+  #ifdef BUILDING_ROS1
+      cloud.header.stamp = ros::Time( timestamp / 1000000000.0);
+  #elif defined BUILDING_ROS2
+      cloud.header.stamp = rclcpp::Time(timestamp);
+  #endif
+
+  cloud.width = points.size();
+  cloud.row_step = cloud.width * cloud.point_step;
+  cloud.data.resize(points.size() * sizeof(LivoxPointXyzrtlt));
+  memcpy(cloud.data.data(), points.data(), points.size() * sizeof(LivoxPointXyzrtlt));
+
+  PublishPointcloud2Data(0, timestamp, cloud);
+}
+
+void Lddc::PublishMergedCustomPointcloud(std::vector<StoragePacket>& pkts) {
+  CustomMsg livox_msg;
+  livox_msg.header.frame_id.assign(frame_id_);
+
+#ifdef BUILDING_ROS1
+  static uint32_t msg_seq = 0;
+  livox_msg.header.seq = msg_seq;
+  ++msg_seq;
+#endif
+
+  uint64_t timestamp = 0;
+  for (size_t i = 0; i < pkts.size(); ++i) {
+    if (!pkts[i].points.empty()) {
+      timestamp = pkts[i].base_time;
+      if (lds_->lidars_[i].lidar_type == kLivoxLidarType) {
+        livox_msg.lidar_id = lds_->lidars_[i].handle;
+      } else {
+        livox_msg.lidar_id = 0;
+      }
+      break;
+    }
+  }
+  livox_msg.timebase = timestamp;
+
+#ifdef BUILDING_ROS1
+  livox_msg.header.stamp = ros::Time(timestamp / 1000000000.0);
+#elif defined BUILDING_ROS2
+  livox_msg.header.stamp = rclcpp::Time(timestamp);
+#endif
+
+  for (size_t i = 0; i < pkts.size(); ++i) {
+    if (pkts[i].points.empty()) continue;
+    uint32_t points_num = pkts[i].points_num;
+    const std::vector<PointXyzlt>& points = pkts[i].points;
+    for (uint32_t j = 0; j < points_num; ++j) {
+      if (IsPointFiltered(points[j].x, points[j].y, points[j].z, lds_->lidars_[i].livox_config)) {
+        continue;
+      }
+      CustomPoint point;
+      point.x = points[j].x;
+      point.y = points[j].y;
+      point.z = points[j].z;
+      point.reflectivity = points[j].intensity;
+      point.tag = points[j].tag;
+      point.line = points[j].line;
+      point.offset_time = static_cast<uint32_t>(points[j].offset_time - livox_msg.timebase);
+
+      livox_msg.points.push_back(std::move(point));
+    }
+  }
+  livox_msg.point_num = livox_msg.points.size();
+
+  if (livox_msg.point_num == 0) return;
+  PublishCustomPointData(livox_msg, 0);
+}
+
+void Lddc::PublishMergedPclMsg(std::vector<StoragePacket>& pkts) {
+#ifdef BUILDING_ROS2
+  static bool first_log = true;
+  if (first_log) {
+    std::cout << "error: message type 'pcl::PointCloud' is NOT supported in ROS2, "
+              << "please modify the 'xfer_format' field in the launch file"
+              << std::endl;
+  }
+  first_log = false;
+  return;
+#endif
+
+#ifdef BUILDING_ROS1
+  PointCloud cloud;
+  cloud.header.frame_id.assign(frame_id_);
+  cloud.height = 1;
+
+  uint64_t timestamp = 0;
+  for (size_t i = 0; i < pkts.size(); ++i) {
+    if (!pkts[i].points.empty()) {
+      timestamp = pkts[i].base_time;
+      break;
+    }
+  }
+  cloud.header.stamp = timestamp / 1000.0;  // to pcl ros time stamp
+
+  for (size_t i = 0; i < pkts.size(); ++i) {
+    if (pkts[i].points.empty()) continue;
+    uint32_t points_num = pkts[i].points_num;
+    const std::vector<PointXyzlt>& points = pkts[i].points;
+    for (uint32_t j = 0; j < points_num; ++j) {
+      if (IsPointFiltered(points[j].x, points[j].y, points[j].z, lds_->lidars_[i].livox_config)) {
+        continue;
+      }
+      pcl::PointXYZI point;
+      point.x = points[j].x;
+      point.y = points[j].y;
+      point.z = points[j].z;
+      point.intensity = points[j].intensity;
+
+      cloud.points.push_back(std::move(point));
+    }
+  }
+  cloud.width = cloud.points.size();
+
+  if (cloud.points.empty()) return;
+  PublishPclData(0, timestamp, cloud);
+#endif
 }
 
 void Lddc::InitPointcloud2MsgHeader(PointCloud2& cloud) {

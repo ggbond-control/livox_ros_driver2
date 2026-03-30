@@ -143,6 +143,9 @@ void Lds::StorageLvxPointData(PointFrame* frame) {
 
     PushLidarData(&lidar_point, index, base_time);
   }
+  if (pcd_semaphore_.GetCount() <= 0) {
+    pcd_semaphore_.Signal();
+  }
 }
 
 void Lds::StoragePointData(PointFrame* frame) {
@@ -165,6 +168,9 @@ void Lds::StoragePointData(PointFrame* frame) {
     }
     PushLidarData(&lidar_point, index, base_time);
   }
+  if (pcd_semaphore_.GetCount() <= 0) {
+    pcd_semaphore_.Signal();
+  }
 }
 
 void Lds::PushLidarData(PointPacket* lidar_data, const uint8_t index, const uint64_t base_time) {
@@ -183,15 +189,6 @@ void Lds::PushLidarData(PointPacket* lidar_data, const uint8_t index, const uint
 
   if (!QueueIsFull(queue)) {
     QueuePushAny(queue, (uint8_t *)lidar_data, base_time);
-    if (!QueueIsEmpty(queue)) {
-      if (pcd_semaphore_.GetCount() <= 0) {
-        pcd_semaphore_.Signal();
-      }
-    }
-  } else {
-    if (pcd_semaphore_.GetCount() <= 0) {
-        pcd_semaphore_.Signal();
-    }
   }
 }
 
