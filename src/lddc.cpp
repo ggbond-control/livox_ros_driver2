@@ -71,6 +71,9 @@ Lddc::Lddc(int format, int multi_topic, int data_src, int output_type,
       output_type_(output_type),
       publish_frq_(frq),
       frame_id_(frame_id),
+      merged_cache_slot_time_(0),
+      merged_cache_initialized_(false),
+      merged_packets_cache_(kMaxSourceLidar),
       enable_lidar_bag_(lidar_bag),
       enable_imu_bag_(imu_bag) {
   publish_period_ns_ = kNsPerSecond / publish_frq_;
@@ -91,7 +94,10 @@ Lddc::Lddc(int format, int multi_topic, int data_src, int output_type,
       data_src_(data_src),
       output_type_(output_type),
       publish_frq_(frq),
-      frame_id_(frame_id) {
+      frame_id_(frame_id),
+      merged_cache_slot_time_(0),
+      merged_cache_initialized_(false),
+      merged_packets_cache_(kMaxSourceLidar) {
   publish_period_ns_ = kNsPerSecond / publish_frq_;
   lds_ = nullptr;
 #if 0
@@ -151,37 +157,37 @@ void Lddc::DistributePointCloudData(void) {
   lds_->pcd_semaphore_.Wait();
 
   if (use_multi_topic_ == 0 && merge_lidars_ == 1) {
-    while (!lds_->IsRequestExit()) {
-      std::vector<uint32_t> ready_lidars;
-      bool waiting_for_complete_frame = false;
-      for (uint32_t i = 0; i < lds_->lidar_count_; i++) {
-        LidarDevice *lidar = &lds_->lidars_[i];
-        LidarDataQueue *p_queue = &lidar->data;
-        if (kConnectStateSampling != lidar->connect_state) {
+    for (uint32_t i = 0; i < lds_->lidar_count_; i++) {
+      LidarDevice *lidar = &lds_->lidars_[i];
+      LidarDataQueue *p_queue = &lidar->data;
+      if ((kConnectStateSampling != lidar->connect_state) || p_queue == nullptr ||
+          p_queue->storage_packet == nullptr) {
+        continue;
+      }
+
+      while (!lds_->IsRequestExit() && !QueueIsEmpty(p_queue)) {
+        StoragePacket pkt;
+        QueuePop(p_queue, &pkt);
+        if (pkt.points.empty()) {
           continue;
         }
-        if (p_queue == nullptr || p_queue->storage_packet == nullptr || QueueIsEmpty(p_queue)) {
-          waiting_for_complete_frame = true;
-          break;
+
+        uint64_t packet_timebase = GetPacketTimebase(pkt, static_cast<uint8_t>(i));
+        if (packet_timebase == 0) {
+          continue;
         }
-        ready_lidars.push_back(i);
-      }
+        uint64_t slot_time = (packet_timebase / publish_period_ns_) * publish_period_ns_;
 
-      if (waiting_for_complete_frame || ready_lidars.empty()) {
-        break;
-      }
+        if (!merged_cache_initialized_) {
+          merged_cache_initialized_ = true;
+          merged_cache_slot_time_ = slot_time;
+        } else if (slot_time > merged_cache_slot_time_) {
+          FlushMergedCache();
+          merged_cache_initialized_ = true;
+          merged_cache_slot_time_ = slot_time;
+        }
 
-      std::vector<StoragePacket> pkts(lds_->lidar_count_);
-      for (uint32_t lidar_id : ready_lidars) {
-        QueuePop(&lds_->lidars_[lidar_id].data, &pkts[lidar_id]);
-      }
-
-      if (kPointCloud2Msg == transfer_format_) {
-        PublishMergedPointcloud2(pkts);
-      } else if (kLivoxCustomMsg == transfer_format_) {
-        PublishMergedCustomPointcloud(pkts);
-      } else if (kPclPxyziMsg == transfer_format_) {
-        PublishMergedPclMsg(pkts);
+        AccumulatePacketToMergedCache(i, pkt);
       }
     }
   } else {
@@ -252,6 +258,7 @@ void Lddc::PrepareExit(void) {
     bag_ = nullptr;
   }
 #endif
+  FlushMergedCache();
   if (lds_) {
     lds_->PrepareExit();
     lds_ = nullptr;
@@ -327,13 +334,13 @@ void Lddc::PublishMergedPointcloud2(std::vector<StoragePacket>& pkts) {
   cloud.is_dense     = true;
 
   std::vector<LivoxPointXyzrtlt> points;
-  uint64_t timestamp = 0;
+  uint64_t timestamp = GetMergedPacketsTimebase(pkts);
+  if (timestamp == 0) {
+    return;
+  }
 
   for (size_t i = 0; i < pkts.size(); ++i) {
     if (pkts[i].points.empty()) continue;
-    if (timestamp == 0 || pkts[i].base_time < timestamp) {
-      timestamp = pkts[i].base_time;
-    }
 
     for (size_t j = 0; j < pkts[i].points_num; ++j) {
       if (IsPointFiltered(pkts[i].points[j].x, pkts[i].points[j].y, pkts[i].points[j].z, lds_->lidars_[i].livox_config)) {
@@ -346,7 +353,7 @@ void Lddc::PublishMergedPointcloud2(std::vector<StoragePacket>& pkts) {
       point.reflectivity = pkts[i].points[j].intensity;
       point.tag = pkts[i].points[j].tag;
       point.line = pkts[i].points[j].line;
-      point.timestamp = static_cast<double>(pkts[i].points[j].offset_time);
+      point.timestamp = static_cast<double>(pkts[i].points[j].offset_time - timestamp);
       points.push_back(std::move(point));
     }
   }
@@ -377,13 +384,9 @@ void Lddc::PublishMergedCustomPointcloud(std::vector<StoragePacket>& pkts) {
   ++msg_seq;
 #endif
 
-  uint64_t timestamp = 0;
-  for (size_t i = 0; i < pkts.size(); ++i) {
-    if (!pkts[i].points.empty()) {
-      if (timestamp == 0 || pkts[i].base_time < timestamp) {
-        timestamp = pkts[i].base_time;
-      }
-    }
+  uint64_t timestamp = GetMergedPacketsTimebase(pkts);
+  if (timestamp == 0) {
+    return;
   }
   livox_msg.lidar_id = 0;
   livox_msg.timebase = timestamp;
@@ -437,13 +440,9 @@ void Lddc::PublishMergedPclMsg(std::vector<StoragePacket>& pkts) {
   cloud.header.frame_id.assign(frame_id_);
   cloud.height = 1;
 
-  uint64_t timestamp = 0;
-  for (size_t i = 0; i < pkts.size(); ++i) {
-    if (!pkts[i].points.empty()) {
-      if (timestamp == 0 || pkts[i].base_time < timestamp) {
-        timestamp = pkts[i].base_time;
-      }
-    }
+  uint64_t timestamp = GetMergedPacketsTimebase(pkts);
+  if (timestamp == 0) {
+    return;
   }
   cloud.header.stamp = timestamp / 1000.0;  // to pcl ros time stamp
 
@@ -469,6 +468,90 @@ void Lddc::PublishMergedPclMsg(std::vector<StoragePacket>& pkts) {
   if (cloud.points.empty()) return;
   PublishPclData(0, timestamp, cloud);
 #endif
+}
+
+void Lddc::ResetMergedCache() {
+  merged_cache_initialized_ = false;
+  merged_cache_slot_time_ = 0;
+  for (auto &pkt : merged_packets_cache_) {
+    pkt.base_time = 0;
+    pkt.points_num = 0;
+    pkt.points.clear();
+  }
+}
+
+bool Lddc::HasMergedCacheData() const {
+  for (const auto &pkt : merged_packets_cache_) {
+    if (!pkt.points.empty()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+uint64_t Lddc::GetPacketTimebase(const StoragePacket& pkt, uint8_t index) const {
+  uint64_t timebase = 0;
+  for (uint32_t i = 0; i < pkt.points_num; ++i) {
+    if (IsPointFiltered(pkt.points[i].x, pkt.points[i].y, pkt.points[i].z, lds_->lidars_[index].livox_config)) {
+      continue;
+    }
+    if (timebase == 0 || pkt.points[i].offset_time < timebase) {
+      timebase = pkt.points[i].offset_time;
+    }
+  }
+  if (timebase == 0) {
+    timebase = pkt.base_time;
+  }
+  return timebase;
+}
+
+uint64_t Lddc::GetMergedPacketsTimebase(const std::vector<StoragePacket>& pkts) const {
+  uint64_t timebase = 0;
+  for (size_t i = 0; i < pkts.size(); ++i) {
+    if (pkts[i].points.empty()) {
+      continue;
+    }
+    uint64_t packet_timebase = GetPacketTimebase(pkts[i], static_cast<uint8_t>(i));
+    if (packet_timebase == 0) {
+      continue;
+    }
+    if (timebase == 0 || packet_timebase < timebase) {
+      timebase = packet_timebase;
+    }
+  }
+  return timebase;
+}
+
+void Lddc::AccumulatePacketToMergedCache(uint32_t lidar_id, StoragePacket& pkt) {
+  StoragePacket &cached_pkt = merged_packets_cache_[lidar_id];
+  if (cached_pkt.points.empty()) {
+    cached_pkt = std::move(pkt);
+    return;
+  }
+
+  if (pkt.base_time < cached_pkt.base_time) {
+    cached_pkt.base_time = pkt.base_time;
+  }
+  cached_pkt.points.insert(cached_pkt.points.end(),
+      std::make_move_iterator(pkt.points.begin()),
+      std::make_move_iterator(pkt.points.end()));
+  cached_pkt.points_num = cached_pkt.points.size();
+}
+
+void Lddc::FlushMergedCache() {
+  if (!HasMergedCacheData()) {
+    ResetMergedCache();
+    return;
+  }
+
+  if (kPointCloud2Msg == transfer_format_) {
+    PublishMergedPointcloud2(merged_packets_cache_);
+  } else if (kLivoxCustomMsg == transfer_format_) {
+    PublishMergedCustomPointcloud(merged_packets_cache_);
+  } else if (kPclPxyziMsg == transfer_format_) {
+    PublishMergedPclMsg(merged_packets_cache_);
+  }
+  ResetMergedCache();
 }
 
 void Lddc::InitPointcloud2MsgHeader(PointCloud2& cloud) {
