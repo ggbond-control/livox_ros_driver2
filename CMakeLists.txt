@@ -134,6 +134,14 @@ rclcpp_components_register_node(${PROJECT_NAME}
   EXECUTABLE ${PROJECT_NAME}_node
 )
 
+ament_auto_add_executable(livox_merge_node
+  src/livox_merge_node.cpp
+)
+
+target_link_libraries(livox_merge_node
+  ${LIVOX_INTERFACE_TARGET}
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
@@ -143,4 +151,3 @@ ament_auto_package(INSTALL_TO_SHARE
   config
   launch
 )
-

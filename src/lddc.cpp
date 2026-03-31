@@ -27,10 +27,11 @@
 #include "comm/comm.h"
 
 #include <inttypes.h>
+#include <chrono>
 #include <iostream>
-#include <iomanip>
 #include <math.h>
 #include <stdint.h>
+#include <iterator>
 
 #include "include/ros_headers.h"
 
@@ -38,6 +39,10 @@
 #include "lds_lidar.h"
 
 namespace livox_ros {
+
+namespace {
+constexpr size_t kMaxMergedCachePointsPerLidar = 20000;
+}
 
 static bool IsPointFiltered(float x, float y, float z, const UserLivoxLidarConfig& config) {
   if (!config.enable_angle_filter || config.angle_filter_centers.empty()) {
@@ -150,29 +155,88 @@ void Lddc::DistributePointCloudData(void) {
   
   lds_->pcd_semaphore_.Wait();
 
-  if (use_multi_topic_ == 0 && merge_lidars_ == 1) {
-    std::vector<StoragePacket> pkts(lds_->lidar_count_);
-    bool has_data = false;
+  const bool should_merge_in_lddc =
+      (use_multi_topic_ == 0 && merge_lidars_ == 1 && data_src_ != kSourceRawLidar);
+  if (should_merge_in_lddc) {
+    static bool merge_timer_initialized = false;
+    static std::chrono::steady_clock::time_point last_merge_pub_time;
+    static std::vector<StoragePacket> merged_pkts_cache;
+    if (merged_pkts_cache.size() != lds_->lidar_count_) {
+      merged_pkts_cache.clear();
+      merged_pkts_cache.resize(lds_->lidar_count_);
+    }
+
     for (uint32_t i = 0; i < lds_->lidar_count_; i++) {
       LidarDevice *lidar = &lds_->lidars_[i];
       LidarDataQueue *p_queue = &lidar->data;
       if ((kConnectStateSampling != lidar->connect_state) || p_queue == nullptr ||
-          p_queue->storage_packet == nullptr || QueueIsEmpty(p_queue)) {
+          p_queue->storage_packet == nullptr) {
         continue;
       }
-      QueuePop(p_queue, &pkts[i]);
-      if (!pkts[i].points.empty()) {
+
+      while (!QueueIsEmpty(p_queue)) {
+        StoragePacket pkt;
+        QueuePop(p_queue, &pkt);
+        if (pkt.points.empty()) {
+          continue;
+        }
+
+        StoragePacket &cached = merged_pkts_cache[i];
+        if (cached.points.empty()) {
+          cached = std::move(pkt);
+        } else {
+          if (cached.base_time == 0 || pkt.base_time < cached.base_time) {
+            cached.base_time = pkt.base_time;
+          }
+          cached.points.insert(cached.points.end(),
+              std::make_move_iterator(pkt.points.begin()),
+              std::make_move_iterator(pkt.points.end()));
+          cached.points_num = cached.points.size();
+        }
+
+        if (cached.points.size() > kMaxMergedCachePointsPerLidar) {
+          size_t drop_cnt = cached.points.size() - kMaxMergedCachePointsPerLidar;
+          cached.points.erase(cached.points.begin(), cached.points.begin() + drop_cnt);
+          cached.points_num = cached.points.size();
+          if (!cached.points.empty()) {
+            cached.base_time = cached.points.front().offset_time;
+          }
+        }
+      }
+    }
+
+    auto now_time = std::chrono::steady_clock::now();
+    if (!merge_timer_initialized) {
+      last_merge_pub_time = now_time;
+      merge_timer_initialized = true;
+      return;
+    }
+    if (now_time - last_merge_pub_time < std::chrono::nanoseconds(publish_period_ns_)) {
+      return;
+    }
+    last_merge_pub_time = now_time;
+
+    bool has_data = false;
+    for (const auto &pkt : merged_pkts_cache) {
+      if (!pkt.points.empty()) {
         has_data = true;
+        break;
       }
     }
 
     if (has_data) {
       if (kPointCloud2Msg == transfer_format_) {
-        PublishMergedPointcloud2(pkts);
+        PublishMergedPointcloud2(merged_pkts_cache);
       } else if (kLivoxCustomMsg == transfer_format_) {
-        PublishMergedCustomPointcloud(pkts);
+        PublishMergedCustomPointcloud(merged_pkts_cache);
       } else if (kPclPxyziMsg == transfer_format_) {
-        PublishMergedPclMsg(pkts);
+        PublishMergedPclMsg(merged_pkts_cache);
+      }
+
+      for (auto &pkt : merged_pkts_cache) {
+        pkt.base_time = 0;
+        pkt.points_num = 0;
+        pkt.points.clear();
       }
     }
   } else {
@@ -455,17 +519,10 @@ void Lddc::PublishMergedPclMsg(std::vector<StoragePacket>& pkts) {
 }
 
 uint64_t Lddc::GetPacketTimebase(const StoragePacket& pkt, uint8_t index) const {
-  uint64_t timebase = 0;
-  for (uint32_t i = 0; i < pkt.points_num; ++i) {
-    if (IsPointFiltered(pkt.points[i].x, pkt.points[i].y, pkt.points[i].z, lds_->lidars_[index].livox_config)) {
-      continue;
-    }
-    if (timebase == 0 || pkt.points[i].offset_time < timebase) {
-      timebase = pkt.points[i].offset_time;
-    }
-  }
-  if (timebase == 0) {
-    timebase = pkt.base_time;
+  (void)index;
+  uint64_t timebase = pkt.base_time;
+  if (timebase == 0 && !pkt.points.empty()) {
+    timebase = pkt.points.front().offset_time;
   }
   return timebase;
 }
@@ -641,23 +698,6 @@ void Lddc::PublishCustomPointData(const CustomMsg& livox_msg, const uint8_t inde
 #elif defined BUILDING_ROS2
   Publisher<CustomMsg>::SharedPtr publisher_ptr = std::dynamic_pointer_cast<Publisher<CustomMsg>>(GetCurrentPublisher(index));
 #endif
-
-  static uint32_t publish_log_seq = 0;
-  static uint64_t last_publish_time_ns = 0;
-  ++publish_log_seq;
-  if ((publish_log_seq % 10) == 1) {
-    uint64_t now_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    uint64_t delta_ns = (last_publish_time_ns == 0) ? 0 : (now_time_ns - last_publish_time_ns);
-    last_publish_time_ns = now_time_ns;
-    std::cout << "custom msg publish: seq=" << publish_log_seq
-              << ", point_num=" << livox_msg.point_num
-              << ", timebase=" << livox_msg.timebase
-              << ", header_stamp=" << livox_msg.header.stamp.sec << "."
-              << std::setw(9) << std::setfill('0') << livox_msg.header.stamp.nanosec
-              << ", delta_ms=" << (delta_ns / 1000000.0)
-              << std::setfill(' ') << std::endl;
-  }
 
   if (kOutputToRos == output_type_) {
     publisher_ptr->publish(livox_msg);

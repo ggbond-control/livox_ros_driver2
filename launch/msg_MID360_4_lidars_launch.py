@@ -8,6 +8,7 @@ import launch
 xfer_format   = 1    # 0-Pointcloud2(PointXYZRTL), 1-customized pointcloud format
 multi_topic   = 0    # 0-All LiDARs share the same topic, 1-One LiDAR one topic
 merge_lidars  = 1    # 0-Publish sequentially, 1-Merge all lidars in same topic into one message
+expected_lidars = 4
 data_src      = 0    # 0-lidar, others-Invalid data src
 publish_freq  = 10.0 # freqency of publish, 5.0, 10.0, 20.0, 50.0, etc.
 output_type   = 0
@@ -20,10 +21,12 @@ cur_config_path = cur_path + '../config'
 user_config_path = os.path.join(cur_config_path, 'MID360_4_lidars.json')
 ################### user configure parameters for ros2 end #####################
 
+driver_merge_lidars = 0 if merge_lidars == 1 else merge_lidars
+
 livox_ros2_params = [
     {"xfer_format": xfer_format},
     {"multi_topic": multi_topic},
-    {"merge_lidars": merge_lidars},
+    {"merge_lidars": driver_merge_lidars},
     {"data_src": data_src},
     {"publish_freq": publish_freq},
     {"output_data_type": output_type},
@@ -39,9 +42,25 @@ def generate_launch_description():
         executable='livox_ros_driver2_node',
         name='livox_lidar_publisher',
         output='screen',
-        parameters=livox_ros2_params
+        parameters=livox_ros2_params,
+        remappings=[('/livox/lidar', '/livox/lidar_raw')] if merge_lidars == 1 else []
         )
 
-    return LaunchDescription([
-        livox_driver,
-    ])
+    actions = [livox_driver]
+
+    if merge_lidars == 1:
+        livox_merger = Node(
+            package='livox_ros_driver2',
+            executable='livox_merge_node',
+            name='livox_lidar_merger',
+            output='screen',
+            parameters=[
+                {"input_topic": "/livox/lidar_raw"},
+                {"output_topic": "/livox/lidar"},
+                {"publish_freq": publish_freq},
+                {"expected_lidars": expected_lidars},
+            ],
+        )
+        actions.append(livox_merger)
+
+    return LaunchDescription(actions)

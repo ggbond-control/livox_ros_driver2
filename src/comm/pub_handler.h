@@ -94,10 +94,13 @@ class PubHandler {
  private:
   //thread to process raw data
   void RawDataProcess();
+  void MergePublishProcess();
   std::atomic<bool> is_quit_{false};
   std::shared_ptr<std::thread> point_process_thread_;
+  std::shared_ptr<std::thread> merge_process_thread_;
   std::mutex packet_mutex_;
   std::condition_variable packet_condition_;
+  std::mutex handler_mutex_;
 
   //publish callback
   void CheckTimer(uint32_t id);
@@ -128,11 +131,12 @@ class PubHandler {
   std::map<uint32_t, std::unique_ptr<LidarPubHandler>> lidar_process_handlers_;
   std::map<uint32_t, std::vector<PointXyzlt>> points_;
   std::vector<PointXyzlt> merged_points_;
+  std::map<uint32_t, std::vector<PointXyzlt>> merged_backlog_points_;
+  uint64_t merge_window_start_ns_ = 0;
   std::map<uint32_t, LidarExtParameter> lidar_extrinsics_;
   static std::atomic<bool> is_timestamp_sync_;
   uint16_t lidar_listen_id_ = 0;
   bool merge_lidars_ = false;
-  bool merge_timer_initialized_ = false;
 };
 
 PubHandler &pub_handler();

@@ -25,12 +25,17 @@
 #include "pub_handler.h"
 
 #include <cstdlib>
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <limits>
-#include <algorithm>
+#include <iterator>
 
 namespace livox_ros {
+
+namespace {
+constexpr size_t kMaxMergedPointsPerLidarPerFrame = 6000;
+}
 
 std::atomic<bool> PubHandler::is_timestamp_sync_;
 
@@ -57,6 +62,14 @@ void PubHandler::Uninit() {
   } else {
     /* */
   }
+
+  if (merge_process_thread_ &&
+    merge_process_thread_->joinable()) {
+    merge_process_thread_->join();
+    merge_process_thread_ = nullptr;
+  } else {
+    /* */
+  }
 }
 
 void PubHandler::RequestExit() {
@@ -64,13 +77,16 @@ void PubHandler::RequestExit() {
 }
 
 void PubHandler::SetPointCloudConfig(const double publish_freq, bool merge_lidars) {
+  is_quit_.store(false);
   merge_lidars_ = merge_lidars;
-  merge_timer_initialized_ = false;
-  publish_interval_ = (kNsPerSecond / (publish_freq * 10)) * 10;
+  publish_interval_ = (kNsPerSecond / publish_freq);
   publish_interval_tolerance_ = publish_interval_ - kNsTolerantFrameTimeDeviation;
   publish_interval_ms_ = publish_interval_ / kRatioOfMsToNs;
   if (!point_process_thread_) {
     point_process_thread_ = std::make_shared<std::thread>(&PubHandler::RawDataProcess, this);
+  }
+  if (merge_lidars_ && !merge_process_thread_) {
+    merge_process_thread_ = std::make_shared<std::thread>(&PubHandler::MergePublishProcess, this);
   }
   return;
 }
@@ -81,14 +97,14 @@ void PubHandler::SetImuDataCallback(ImuDataCallback cb, void* client_data) {
 }
 
 void PubHandler::AddLidarsExtParam(LidarExtParameter& lidar_param) {
-  std::unique_lock<std::mutex> lock(packet_mutex_);
+  std::unique_lock<std::mutex> lock(handler_mutex_);
   uint32_t id = 0;
   GetLidarId(lidar_param.lidar_type, lidar_param.handle, id);
   lidar_extrinsics_[id] = lidar_param;
 }
 
 void PubHandler::ClearAllLidarsExtrinsicParams() {
-  std::unique_lock<std::mutex> lock(packet_mutex_);
+  std::unique_lock<std::mutex> lock(handler_mutex_);
   lidar_extrinsics_.clear();
 }
 
@@ -168,12 +184,22 @@ void PubHandler::PublishMergedPointCloud() {
   uint64_t merged_timebase = std::numeric_limits<uint64_t>::max();
   uint32_t merged_handle = 0;
   bool has_points = false;
+  size_t total_points = 0;
+  std::vector<std::pair<uint32_t, LidarPubHandler*>> handlers_snapshot;
+
+  {
+    std::lock_guard<std::mutex> lock(handler_mutex_);
+    handlers_snapshot.reserve(lidar_process_handlers_.size());
+    for (auto &kv : lidar_process_handlers_) {
+      handlers_snapshot.emplace_back(kv.first, kv.second.get());
+    }
+  }
 
   merged_points_.clear();
-  for (auto &process_handler : lidar_process_handlers_) {
-    uint32_t handle = process_handler.first;
+  for (const auto &entry : handlers_snapshot) {
+    uint32_t handle = entry.first;
     points_[handle].clear();
-    process_handler.second->GetLidarPointClouds(points_[handle]);
+    entry.second->GetLidarPointClouds(points_[handle]);
     if (points_[handle].empty()) {
       continue;
     }
@@ -182,21 +208,34 @@ void PubHandler::PublishMergedPointCloud() {
     if (merged_handle == 0) {
       merged_handle = handle;
     }
-    if (points_[handle].front().offset_time < merged_timebase) {
-      merged_timebase = points_[handle].front().offset_time;
+    size_t start_idx = 0;
+    if (points_[handle].size() > kMaxMergedPointsPerLidarPerFrame) {
+      start_idx = points_[handle].size() - kMaxMergedPointsPerLidarPerFrame;
     }
-    merged_points_.insert(merged_points_.end(), points_[handle].begin(), points_[handle].end());
+    if (points_[handle][start_idx].offset_time < merged_timebase) {
+      merged_timebase = points_[handle][start_idx].offset_time;
+    }
+    total_points += (points_[handle].size() - start_idx);
   }
 
   if (!has_points) {
     return;
   }
 
-  std::sort(merged_points_.begin(), merged_points_.end(),
-      [](const PointXyzlt& lhs, const PointXyzlt& rhs) {
-        return lhs.offset_time < rhs.offset_time;
-      });
-  merged_timebase = merged_points_.front().offset_time;
+  merged_points_.reserve(total_points);
+  for (const auto &entry : handlers_snapshot) {
+    uint32_t handle = entry.first;
+    if (points_[handle].empty()) {
+      continue;
+    }
+    size_t start_idx = 0;
+    if (points_[handle].size() > kMaxMergedPointsPerLidarPerFrame) {
+      start_idx = points_[handle].size() - kMaxMergedPointsPerLidarPerFrame;
+    }
+    merged_points_.insert(merged_points_.end(),
+        std::make_move_iterator(points_[handle].begin() + start_idx),
+        std::make_move_iterator(points_[handle].end()));
+  }
 
   frame_.lidar_num = 1;
   frame_.base_time[0] = merged_timebase;
@@ -210,19 +249,21 @@ void PubHandler::PublishMergedPointCloud() {
   frame_.lidar_num = 0;
 }
 
+void PubHandler::MergePublishProcess() {
+  auto next_pub_time = std::chrono::steady_clock::now() + std::chrono::nanoseconds(publish_interval_);
+  while (!is_quit_.load()) {
+    std::this_thread::sleep_until(next_pub_time);
+    next_pub_time += std::chrono::nanoseconds(publish_interval_);
+    if (!merge_lidars_) {
+      continue;
+    }
+    PublishMergedPointCloud();
+  }
+}
+
 void PubHandler::CheckTimer(uint32_t id) {
   if (merge_lidars_) {
-    auto now_time = std::chrono::high_resolution_clock::now();
-    if (!merge_timer_initialized_) {
-      last_pub_time_ = now_time;
-      merge_timer_initialized_ = true;
-      return;
-    }
-    if (now_time - last_pub_time_ < std::chrono::nanoseconds(publish_interval_)) {
-      return;
-    }
-    last_pub_time_ += std::chrono::nanoseconds(publish_interval_);
-    PublishMergedPointCloud();
+    (void)id;
     return;
   }
 
@@ -305,12 +346,16 @@ void PubHandler::RawDataProcess() {
     }
     uint32_t id = 0;
     GetLidarId(raw_data.lidar_type, raw_data.handle, id);
-    if (lidar_process_handlers_.find(id) == lidar_process_handlers_.end()) {
-      lidar_process_handlers_[id].reset(new LidarPubHandler());
-    }
-    auto &process_handler = lidar_process_handlers_[id];
-    if (lidar_extrinsics_.find(id) != lidar_extrinsics_.end()) {
-        lidar_process_handlers_[id]->SetLidarsExtParam(lidar_extrinsics_[id]);
+    LidarPubHandler* process_handler = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(handler_mutex_);
+      if (lidar_process_handlers_.find(id) == lidar_process_handlers_.end()) {
+        lidar_process_handlers_[id].reset(new LidarPubHandler());
+      }
+      process_handler = lidar_process_handlers_[id].get();
+      if (lidar_extrinsics_.find(id) != lidar_extrinsics_.end()) {
+        process_handler->SetLidarsExtParam(lidar_extrinsics_[id]);
+      }
     }
     process_handler->PointCloudProcess(raw_data);
     CheckTimer(id);
@@ -429,6 +474,8 @@ void LidarPubHandler::SetLidarsExtParam(LidarExtParameter lidar_param) {
 void LidarPubHandler::ProcessCartesianHighPoint(RawPacket & pkt) {
   LivoxLidarCartesianHighRawPoint* raw = (LivoxLidarCartesianHighRawPoint*)pkt.raw_data.data();
   PointXyzlt point = {};
+  std::vector<PointXyzlt> local_points;
+  local_points.reserve(pkt.point_num);
   for (uint32_t i = 0; i < pkt.point_num; i++) {
     if (pkt.extrinsic_enable) {
       point.x = raw[i].x / 1000.0;
@@ -449,14 +496,20 @@ void LidarPubHandler::ProcessCartesianHighPoint(RawPacket & pkt) {
     point.line = i % pkt.line_num;
     point.tag = raw[i].tag;
     point.offset_time = pkt.time_stamp + i * pkt.point_interval;
-    std::lock_guard<std::mutex> lock(mutex_);
-    points_clouds_.push_back(point);
+    local_points.push_back(point);
   }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  points_clouds_.insert(points_clouds_.end(),
+      std::make_move_iterator(local_points.begin()),
+      std::make_move_iterator(local_points.end()));
 }
 
 void LidarPubHandler::ProcessCartesianLowPoint(RawPacket & pkt) {
   LivoxLidarCartesianLowRawPoint* raw = (LivoxLidarCartesianLowRawPoint*)pkt.raw_data.data();
   PointXyzlt point = {};
+  std::vector<PointXyzlt> local_points;
+  local_points.reserve(pkt.point_num);
   for (uint32_t i = 0; i < pkt.point_num; i++) {
     if (pkt.extrinsic_enable) {
       point.x = raw[i].x / 100.0;
@@ -477,14 +530,20 @@ void LidarPubHandler::ProcessCartesianLowPoint(RawPacket & pkt) {
     point.line = i % pkt.line_num;
     point.tag = raw[i].tag;
     point.offset_time = pkt.time_stamp + i * pkt.point_interval;
-    std::lock_guard<std::mutex> lock(mutex_);
-    points_clouds_.push_back(point);
+    local_points.push_back(point);
   }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  points_clouds_.insert(points_clouds_.end(),
+      std::make_move_iterator(local_points.begin()),
+      std::make_move_iterator(local_points.end()));
 }
 
 void LidarPubHandler::ProcessSphericalPoint(RawPacket& pkt) {
   LivoxLidarSpherPoint* raw = (LivoxLidarSpherPoint*)pkt.raw_data.data();
   PointXyzlt point = {};
+  std::vector<PointXyzlt> local_points;
+  local_points.reserve(pkt.point_num);
   for (uint32_t i = 0; i < pkt.point_num; i++) {
     double radius = raw[i].depth / 1000.0;
     double theta = raw[i].theta / 100.0 / 180 * PI;
@@ -512,9 +571,13 @@ void LidarPubHandler::ProcessSphericalPoint(RawPacket& pkt) {
     point.line = i % pkt.line_num;
     point.tag = raw[i].tag;
     point.offset_time = pkt.time_stamp + i * pkt.point_interval;
-    std::lock_guard<std::mutex> lock(mutex_);
-    points_clouds_.push_back(point);
+    local_points.push_back(point);
   }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  points_clouds_.insert(points_clouds_.end(),
+      std::make_move_iterator(local_points.begin()),
+      std::make_move_iterator(local_points.end()));
 }
 
 } // namespace livox_ros

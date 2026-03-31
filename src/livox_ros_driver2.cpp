@@ -96,6 +96,7 @@ int main(int argc, char **argv) {
     DRIVER_INFO(livox_node, "Config file : %s", user_config_path.c_str());
 
     LdsLidar *read_lidar = LdsLidar::GetInstance(publish_freq);
+    read_lidar->SetMergeLidars(merge_lidars != 0);
     livox_node.lddc_ptr_->RegisterLds(static_cast<Lds *>(read_lidar));
 
     if ((read_lidar->InitLdsLidar(user_config_path))) {
