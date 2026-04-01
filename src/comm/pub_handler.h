@@ -26,6 +26,7 @@
 #define LIVOX_DRIVER_PUB_HANDLER_H_
 
 #include <atomic>
+#include <array>
 #include <cstring>
 #include <condition_variable> // std::condition_variable
 #include <deque>
@@ -125,7 +126,8 @@ class PubHandler {
   TimePoint last_pub_time_;
 
   std::map<uint32_t, std::unique_ptr<LidarPubHandler>> lidar_process_handlers_;
-  std::map<uint32_t, std::vector<PointXyzlt>> points_;
+  std::map<uint32_t, std::array<std::vector<PointXyzlt>, 2>> points_buffers_;
+  std::map<uint32_t, size_t> points_buffer_index_;
   std::map<uint32_t, LidarExtParameter> lidar_extrinsics_;
   static std::atomic<bool> is_timestamp_sync_;
   uint16_t lidar_listen_id_ = 0;

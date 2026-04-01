@@ -23,6 +23,7 @@
 //
 
 #include "parse_livox_lidar_cfg.h"
+#include <cmath>
 #include <iostream>
 
 namespace livox_ros {
@@ -169,17 +170,17 @@ bool LivoxLidarConfigParser::ParseExtrinsics(const rapidjson::Value &value,
   if (!value.HasMember("x")) {
     param.x = 0;
   } else {
-    param.x = static_cast<int32_t>(value["x"].GetInt());
+    param.x = value["x"].IsNumber() ? static_cast<int32_t>(std::lround(value["x"].GetDouble())) : 0;
   }
   if (!value.HasMember("y")) {
     param.y = 0;
   } else {
-    param.y = static_cast<int32_t>(value["y"].GetInt());
+    param.y = value["y"].IsNumber() ? static_cast<int32_t>(std::lround(value["y"].GetDouble())) : 0;
   }
   if (!value.HasMember("z")) {
     param.z = 0;
   } else {
-    param.z = static_cast<int32_t>(value["z"].GetInt());
+    param.z = value["z"].IsNumber() ? static_cast<int32_t>(std::lround(value["z"].GetDouble())) : 0;
   }
 
   return true;

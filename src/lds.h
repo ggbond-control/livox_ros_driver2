@@ -27,7 +27,9 @@
 #ifndef LIVOX_ROS_DRIVER_LDS_H_
 #define LIVOX_ROS_DRIVER_LDS_H_
 
+#include <deque>
 #include <map>
+#include <mutex>
 
 #include "comm/semaphore.h"
 #include "comm/comm.h"
@@ -45,6 +47,9 @@ class Lds {
   void StorageImuData(ImuData* imu_data);
   void StoragePointData(PointFrame* frame);
   void StorageLvxPointData(PointFrame* frame);
+  void SetMergeLidars(bool merge_lidars) { merge_lidars_ = merge_lidars; }
+  bool PopMergedFrame(StorageFrame* frame);
+  bool HasMergedFrame();
 
   int8_t GetHandle(const uint8_t lidar_type, const PointPacket* lidar_point);
   void PushLidarData(PointPacket* lidar_data, const uint8_t index, const uint64_t base_time);
@@ -75,7 +80,12 @@ class Lds {
   double publish_freq_;
   uint8_t data_src_;
  private:
+  void PushMergedFrame(PointFrame* frame);
+
   volatile bool request_exit_;
+  bool merge_lidars_ = false;
+  std::mutex merged_frames_mutex_;
+  std::deque<StorageFrame> merged_frames_;
 };
 
 }  // namespace livox_ros

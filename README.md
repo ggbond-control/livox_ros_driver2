@@ -1,3 +1,115 @@
+## 多 MID360 合并说明
+
+当前仓库已经补齐 ROS2 下 **4 台 MID360** 的原始雷达合并发布路径，可将 4 台雷达合并后发布为一条 `/livox/lidar` `CustomMsg` 数据流。
+
+### 这次改了什么
+
+合并发布链路跨了整个 raw-lidar 数据路径，核心逻辑如下：
+
+1. 增加 `merge_lidars` 开关，并从 launch 传到驱动入口。
+2. `PubHandler` 保留每台雷达的整帧数据，并使用双缓冲交接，避免 merge 时每周期多做一次整帧深拷贝。
+3. `Lds` 在 merge 模式下直接缓存 merged frame，而不是再拆回单雷达队列。
+4. `Lddc` 在 `merge_lidars=1 && multi_topic=0` 时，直接从 merged frame 队列发布单条 merged `CustomMsg`。
+
+核心涉及文件：
+
+- [src/livox_ros_driver2.cpp](src/livox_ros_driver2.cpp)
+- [src/comm/comm.h](src/comm/comm.h)
+- [src/comm/pub_handler.h](src/comm/pub_handler.h)
+- [src/comm/pub_handler.cpp](src/comm/pub_handler.cpp)
+- [src/lds.h](src/lds.h)
+- [src/lds.cpp](src/lds.cpp)
+- [src/lddc.h](src/lddc.h)
+- [src/lddc.cpp](src/lddc.cpp)
+
+推荐使用的启动入口：
+
+- [launch/msg_multi_MID360_launch.py](launch/msg_multi_MID360_launch.py)
+
+关键参数保持如下：
+
+- `xfer_format = 1`
+- `multi_topic = 0`
+- `merge_lidars = 1`
+- `publish_freq = 10.0`
+
+### 为什么还需要调系统 buffer 和 CycloneDDS
+
+4 雷达合并后，单条 `/livox/lidar` `CustomMsg` 大约在 **1.5 MB 到 1.7 MB**。  
+仅仅完成 merge 逻辑还不够，如果 Linux socket buffer 和 CycloneDDS socket buffer 太小，ROS2 跨进程订阅时吞吐会明显掉下来。
+
+如果系统 buffer 没调好，常见报错如下：
+
+```text
+failed to increase socket receive buffer size to at least 8388608 bytes, current is 425984 bytes
+```
+
+这个报错通常表示 Linux 内核的 socket buffer 上限仍然太小。
+
+### 必须保留的系统配置
+
+建议持久化以下 `sysctl` 参数：
+
+```bash
+sudo tee /etc/sysctl.d/60-livox-dds.conf >/dev/null <<'EOF'
+net.core.rmem_max=8388608
+net.core.rmem_default=8388608
+net.core.wmem_max=8388608
+net.core.wmem_default=8388608
+EOF
+
+sudo sysctl --system
+```
+
+重启后请验证：
+
+```bash
+sysctl net.core.rmem_max net.core.rmem_default net.core.wmem_max net.core.wmem_default
+```
+
+预期值：
+
+```text
+net.core.rmem_max = 8388608
+net.core.rmem_default = 8388608
+net.core.wmem_max = 8388608
+net.core.wmem_default = 8388608
+```
+
+### 必须保留的 CycloneDDS 配置
+
+请使用：
+
+- [config/cyclonedds_large_message.xml](config/cyclonedds_large_message.xml)
+
+当前推荐值为：
+
+- `SocketReceiveBufferSize = 8MiB`
+- `SocketSendBufferSize = 8MiB`
+- `ReceiveBufferSize = 32MiB`
+
+启动前导出环境变量：
+
+```bash
+export CYCLONEDDS_URI=file:///home/cat/Workspace/driver_ws/src/livox_ros_driver2/config/cyclonedds_large_message.xml
+```
+
+### 最终启动方式
+
+```bash
+source /home/cat/Workspace/driver_ws/install/setup.zsh
+export CYCLONEDDS_URI=file:///home/cat/Workspace/driver_ws/src/livox_ros_driver2/config/cyclonedds_large_message.xml
+ros2 launch livox_ros_driver2 msg_multi_MID360_launch.py
+```
+
+### 实际结论和注意事项
+
+1. 对这条 merged lidar 流，继续保持 `SensorDataQoS()` 是合理的默认选择。
+2. 对当前这台机器和当前这组数据量来说，`8MiB` 已经足够；`16MiB` 没有表现出明显优于 `8MiB` 的收益。
+3. 在上述配置下，**C++ ROS2 订阅端** 已验证可以稳定接近 `10Hz`。
+4. **Python 订阅大 `CustomMsg`** 仍然可能明显偏慢，因此性能敏感的下游建议使用 C++ 节点。
+5. 如果 socket buffer 没有真正持久化成功，系统重启后会回到默认内核值，此时 merge 订阅频率会再次下降。
+
 ## Compile Command
 ```shell
 colcon build --packages-select livox_ros_driver2 --cmake-args -Wno-dev -DCMAKE_EXPORT_COMPILE_COMMANDS=1 --symlink-install

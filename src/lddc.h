@@ -73,10 +73,10 @@ class Lddc final {
  public:
 #ifdef BUILDING_ROS1
   Lddc(int format, int multi_topic, int data_src, int output_type, double frq,
-      std::string &frame_id, bool lidar_bag, bool imu_bag);
+      std::string &frame_id, bool lidar_bag, bool imu_bag, bool merge_lidars = false);
 #elif defined BUILDING_ROS2
   Lddc(int format, int multi_topic, int data_src, int output_type, double frq,
-      std::string &frame_id);
+      std::string &frame_id, bool merge_lidars = false);
 #endif
   ~Lddc();
 
@@ -103,16 +103,19 @@ class Lddc final {
   void PublishPointcloud2(LidarDataQueue *queue, uint8_t index);
   void PublishCustomPointcloud(LidarDataQueue *queue, uint8_t index);
   void PublishPclMsg(LidarDataQueue *queue, uint8_t index);
+  void PublishMergedPointCloud();
+  void PublishMergedPointcloud2(const StorageFrame& frame);
+  void PublishMergedCustomPointcloud(const StorageFrame& frame);
 
   void PublishImuData(LidarImuDataQueue& imu_data_queue, const uint8_t index);
 
   void InitPointcloud2MsgHeader(PointCloud2& cloud);
   void InitPointcloud2Msg(const StoragePacket& pkg, PointCloud2& cloud, uint64_t& timestamp, uint8_t index);
-  void PublishPointcloud2Data(const uint8_t index, uint64_t timestamp, const PointCloud2& cloud);
+  void PublishPointcloud2Data(const uint8_t index, uint64_t timestamp, PointCloud2&& cloud);
 
   void InitCustomMsg(CustomMsg& livox_msg, const StoragePacket& pkg, uint8_t index);
   void FillPointsToCustomMsg(CustomMsg& livox_msg, const StoragePacket& pkg, uint8_t index);
-  void PublishCustomPointData(const CustomMsg& livox_msg, const uint8_t index);
+  void PublishCustomPointData(CustomMsg&& livox_msg, const uint8_t index);
 
   void InitPclMsg(const StoragePacket& pkg, PointCloud& cloud, uint64_t& timestamp, uint8_t index);
   void FillPointsToPclMsg(const StoragePacket& pkg, PointCloud& pcl_msg, uint8_t index);
@@ -123,6 +126,7 @@ class Lddc final {
   void FillPointsToPclMsg(PointCloud& pcl_msg, LivoxPointXyzrtlt* src_point, uint32_t num);
   void FillPointsToCustomMsg(CustomMsg& livox_msg, LivoxPointXyzrtlt* src_point, uint32_t num,
       uint32_t offset_time, uint32_t point_interval, uint32_t echo_num);
+  int FindLidarIndex(uint32_t handle) const;
 
 #ifdef BUILDING_ROS2
   PublisherPtr CreatePublisher(uint8_t msg_type, std::string &topic_name, uint32_t queue_size);
@@ -136,6 +140,7 @@ class Lddc final {
   uint8_t use_multi_topic_;
   uint8_t data_src_;
   uint8_t output_type_;
+  bool merge_lidars_;
   double publish_frq_;
   uint32_t publish_period_ns_;
   std::string frame_id_;

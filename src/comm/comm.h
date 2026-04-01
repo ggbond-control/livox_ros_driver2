@@ -172,6 +172,7 @@ typedef struct {
   uint8_t lidar_type; ////refer to LivoxLidarType
   uint32_t points_num;
   PointXyzlt* points;
+  std::vector<PointXyzlt>* points_storage;
 } PointPacket;
 
 typedef struct {
@@ -189,6 +190,11 @@ typedef struct {
   uint32_t points_num;
   std::vector<PointXyzlt> points;
 } StoragePacket;
+
+typedef struct {
+  uint8_t lidar_num;
+  std::vector<StoragePacket> packets;
+} StorageFrame;
 
 typedef struct {
   LidarProtoType lidar_type;

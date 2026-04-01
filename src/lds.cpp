@@ -67,6 +67,10 @@ void Lds::SetLidarDataSrc(LidarDevice *lidar, uint8_t data_src) {
 }
 
 void Lds::ResetLds(uint8_t data_src) {
+  {
+    std::lock_guard<std::mutex> lock(merged_frames_mutex_);
+    merged_frames_.clear();
+  }
   lidar_count_ = kMaxSourceLidar;
   for (uint32_t i = 0; i < kMaxSourceLidar; i++) {
     ResetLidar(&lidars_[i], data_src);
@@ -78,6 +82,9 @@ void Lds::RequestExit() {
 }
 
 bool Lds::IsAllQueueEmpty() {
+  if (HasMergedFrame()) {
+    return false;
+  }
   for (int i = 0; i < lidar_count_; i++) {
     if (!QueueIsEmpty(&lidars_[i].data)) {
       return false;
@@ -87,6 +94,9 @@ bool Lds::IsAllQueueEmpty() {
 }
 
 bool Lds::IsAllQueueReadStop() {
+  if (HasMergedFrame()) {
+    return false;
+  }
   for (int i = 0; i < lidar_count_; i++) {
     uint32_t data_size = QueueUsedSize(&lidars_[i].data);
     if (data_size) {
@@ -150,6 +160,11 @@ void Lds::StoragePointData(PointFrame* frame) {
     return;
   }
 
+  if (merge_lidars_ && frame->lidar_num > 0) {
+    PushMergedFrame(frame);
+    return;
+  }
+
   uint8_t lidar_number = frame->lidar_num;
   for (uint i = 0; i < lidar_number; ++i) {
     PointPacket& lidar_point = frame->lidar_point[i];
@@ -165,6 +180,71 @@ void Lds::StoragePointData(PointFrame* frame) {
     }
     PushLidarData(&lidar_point, index, base_time);
   }
+}
+
+void Lds::PushMergedFrame(PointFrame* frame) {
+  StorageFrame storage_frame;
+  storage_frame.lidar_num = frame->lidar_num;
+  storage_frame.packets.reserve(frame->lidar_num);
+
+  for (uint8_t i = 0; i < frame->lidar_num; ++i) {
+    const PointPacket& lidar_point = frame->lidar_point[i];
+    if (lidar_point.points == nullptr || lidar_point.points_num == 0) {
+      continue;
+    }
+
+    StoragePacket pkg;
+    pkg.lidar_type = static_cast<LidarProtoType>(lidar_point.lidar_type);
+    pkg.handle = lidar_point.handle;
+    pkg.base_time = frame->base_time[i];
+    if (lidar_point.points_storage != nullptr) {
+      pkg.points = std::move(*lidar_point.points_storage);
+      pkg.points_num = pkg.points.size();
+    } else {
+      pkg.points_num = lidar_point.points_num;
+      pkg.points.resize(lidar_point.points_num);
+      memcpy(pkg.points.data(), lidar_point.points, sizeof(PointXyzlt) * lidar_point.points_num);
+    }
+    storage_frame.packets.push_back(std::move(pkg));
+  }
+
+  storage_frame.lidar_num = static_cast<uint8_t>(storage_frame.packets.size());
+  if (storage_frame.packets.empty()) {
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(merged_frames_mutex_);
+    merged_frames_.push_back(std::move(storage_frame));
+    // Keep the merged queue short so stale frames do not pile up under load.
+    while (merged_frames_.size() > 4) {
+      merged_frames_.pop_front();
+    }
+  }
+
+  if (pcd_semaphore_.GetCount() <= 0) {
+    pcd_semaphore_.Signal();
+  }
+}
+
+bool Lds::PopMergedFrame(StorageFrame* frame) {
+  if (frame == nullptr) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(merged_frames_mutex_);
+  if (merged_frames_.empty()) {
+    return false;
+  }
+
+  *frame = std::move(merged_frames_.front());
+  merged_frames_.pop_front();
+  return true;
+}
+
+bool Lds::HasMergedFrame() {
+  std::lock_guard<std::mutex> lock(merged_frames_mutex_);
+  return !merged_frames_.empty();
 }
 
 void Lds::PushLidarData(PointPacket* lidar_data, const uint8_t index, const uint64_t base_time) {
