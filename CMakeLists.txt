@@ -134,6 +134,25 @@ rclcpp_components_register_node(${PROJECT_NAME}
   EXECUTABLE ${PROJECT_NAME}_node
 )
 
+ament_auto_add_executable(multi_lidar_map_calibrator_node
+  src/multi_lidar_map_calibrator_node.cpp
+  src/comm/comm.cpp
+  src/parse_cfg_file/parse_livox_lidar_cfg.cpp
+)
+
+target_include_directories(multi_lidar_map_calibrator_node PUBLIC
+  ${PCL_INCLUDE_DIRS}
+  ${APR_INCLUDE_DIRS}
+  ${LIVOX_LIDAR_SDK_INCLUDE_DIR}
+  ${LIVOX_INTERFACES_INCLUDE_DIRECTORIES}
+  3rdparty
+  src
+)
+
+target_link_libraries(multi_lidar_map_calibrator_node
+  ${PCL_LIBRARIES}
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
@@ -143,4 +162,3 @@ ament_auto_package(INSTALL_TO_SHARE
   config
   launch
 )
-

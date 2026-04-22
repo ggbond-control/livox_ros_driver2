@@ -20,57 +20,57 @@
       "log_data_port"  : 56501
     }
   },
-  "lidar_configs" : [
+  "lidar_configs": [
     {
-      "ip" : "192.168.2.202",         
-      "pcl_data_type" : 1,
-      "pattern_mode" : 0,         
-      "extrinsic_parameter" : {
-        "roll": 95.0,
-        "pitch": 0.0,
-        "yaw": -90.0,
-        "x": -466.0,
-        "y": 0.0,
-        "z": 35.0
+      "ip": "192.168.2.202",
+      "pcl_data_type": 1,
+      "pattern_mode": 0,
+      "extrinsic_parameter": {
+        "roll": 94.872632,
+        "pitch": -0.789129,
+        "yaw": -89.176760,
+        "x": -454.136789,
+        "y": -6.099747,
+        "z": 44.423327
       }
     },
     {
-      "ip" : "192.168.2.203",    
-      "pcl_data_type" : 1,
-      "pattern_mode" : 0,         
-      "extrinsic_parameter" : {
-        "roll": 146.0,
-        "pitch": 0.0,
-        "yaw": -90.0,
-        "x": -411.0,
-        "y": 0.0,
-        "z": -56.0
+      "ip": "192.168.2.203",
+      "pcl_data_type": 1,
+      "pattern_mode": 0,
+      "extrinsic_parameter": {
+        "roll": 146.452056,
+        "pitch": -0.797121,
+        "yaw": -90.812290,
+        "x": -427.792102,
+        "y": -25.833925,
+        "z": -34.778036
       }
     },
     {
-      "ip" : "192.168.2.204",     
-      "pcl_data_type" : 1,
-      "pattern_mode" : 0,         
-      "extrinsic_parameter" : {
-        "roll": 136.0,
-        "pitch": 0.0,
-        "yaw": 90.0,
-        "x": 422.0,
-        "y": 0.0,
-        "z": -55.0
+      "ip": "192.168.2.204",
+      "pcl_data_type": 1,
+      "pattern_mode": 0,
+      "extrinsic_parameter": {
+        "roll": 136.940157,
+        "pitch": -0.247772,
+        "yaw": 89.889244,
+        "x": 428.208798,
+        "y": 24.359522,
+        "z": -43.616779
       }
     },
     {
-      "ip" : "192.168.2.205",
-      "pcl_data_type" : 1,
-      "pattern_mode" : 0,
-      "extrinsic_parameter" : {
-        "roll": 85.0,
-        "pitch": 0.0,
-        "yaw": 90.0,
-        "x": 460.0,
-        "y": 0.0,
-        "z": 44.0
+      "ip": "192.168.2.205",
+      "pcl_data_type": 1,
+      "pattern_mode": 0,
+      "extrinsic_parameter": {
+        "roll": 65.818858,
+        "pitch": -0.672126,
+        "yaw": 90.842315,
+        "x": 448.139846,
+        "y": 11.575427,
+        "z": 55.562302
       }
     }
   ]
