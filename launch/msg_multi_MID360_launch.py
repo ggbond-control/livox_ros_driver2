@@ -1,6 +1,8 @@
 import os
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 ################### user configure parameters for ros2 start ###################
@@ -16,24 +18,30 @@ cmdline_bd_code = 'livox0000000001'
 
 cur_path = os.path.split(os.path.realpath(__file__))[0] + '/'
 cur_config_path = cur_path + '../config'
-user_config_path = os.path.join(cur_config_path, 'multi_MID360_config.json')
 ################### user configure parameters for ros2 end #####################
 
-livox_ros2_params = [
-    {"xfer_format": xfer_format},
-    {"multi_topic": multi_topic},
-    {"merge_lidars": merge_lidars},
-    {"data_src": data_src},
-    {"publish_freq": publish_freq},
-    {"output_data_type": output_type},
-    {"frame_id": frame_id},
-    {"lvx_file_path": lvx_file_path},
-    {"user_config_path": user_config_path},
-    {"cmdline_input_bd_code": cmdline_bd_code}
-]
 
+def launch_setup(context, *args, **kwargs):
+    model = LaunchConfiguration('model').perform(context)
+    config_file = {
+        'mid360': 'multi_MID360_config.json',
+        'mid360s': 'multi_MID360s_config.json',
+    }[model]
+    user_config_path = os.path.join(cur_config_path, config_file)
 
-def generate_launch_description():
+    livox_ros2_params = [
+        {"xfer_format": xfer_format},
+        {"multi_topic": multi_topic},
+        {"merge_lidars": merge_lidars},
+        {"data_src": data_src},
+        {"publish_freq": publish_freq},
+        {"output_data_type": output_type},
+        {"frame_id": frame_id},
+        {"lvx_file_path": lvx_file_path},
+        {"user_config_path": user_config_path},
+        {"cmdline_input_bd_code": cmdline_bd_code}
+    ]
+
     livox_driver = Node(
         package='livox_ros_driver2',
         executable='livox_ros_driver2_node',
@@ -42,6 +50,16 @@ def generate_launch_description():
         parameters=livox_ros2_params
     )
 
+    return [livox_driver]
+
+
+def generate_launch_description():
     return LaunchDescription([
-        livox_driver,
+        DeclareLaunchArgument(
+            'model',
+            default_value='mid360',
+            choices=['mid360', 'mid360s'],
+            description='LiDAR config profile: mid360 or mid360s.'
+        ),
+        OpaqueFunction(function=launch_setup),
     ])

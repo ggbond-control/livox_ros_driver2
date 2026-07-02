@@ -1,6 +1,6 @@
 ## 多 MID360 合并说明
 
-当前仓库已经补齐 ROS2 下 **4 台 MID360** 的原始雷达合并发布路径，可将 4 台雷达合并后发布为一条 `/livox/lidar` `CustomMsg` 数据流。
+当前仓库已经补齐 ROS2 下 **4 台 MID360 / MID360S** 的原始雷达合并发布路径，可将 4 台雷达合并后发布为一条 `/livox/lidar` `CustomMsg` 数据流。
 
 ### 这次改了什么
 
@@ -10,6 +10,8 @@
 2. `PubHandler` 保留每台雷达的整帧数据，并使用双缓冲交接，避免 merge 时每周期多做一次整帧深拷贝。
 3. `Lds` 在 merge 模式下直接缓存 merged frame，而不是再拆回单雷达队列。
 4. `Lddc` 在 `merge_lidars=1 && multi_topic=0` 时，直接从 merged frame 队列发布单条 merged `CustomMsg`。
+5. 补齐 MID360S 设备类型识别，将 `kLivoxLidarTypeMid360s` 按 MID360 的 4 线模型处理。
+6. `msg_multi_MID360_launch.py` 增加 `model` 参数，可在 `mid360` 和 `mid360s` 两套 JSON 配置间切换。
 
 核心涉及文件：
 
@@ -25,6 +27,11 @@
 推荐使用的启动入口：
 
 - [launch/msg_multi_MID360_launch.py](launch/msg_multi_MID360_launch.py)
+
+该 launch 支持 `model` 参数：
+
+- `model:=mid360`：读取 [config/multi_MID360_config.json](config/multi_MID360_config.json)
+- `model:=mid360s`：读取 [config/multi_MID360s_config.json](config/multi_MID360s_config.json)
 
 关键参数保持如下：
 
@@ -102,6 +109,14 @@ export CYCLONEDDS_URI=file:///home/cat/Workspace/driver_ws/src/livox_ros_driver2
 ros2 launch livox_ros_driver2 msg_multi_MID360_launch.py
 ```
 
+如果使用 MID360S：
+
+```bash
+source /home/cat/Workspace/driver_ws/install/setup.zsh
+export CYCLONEDDS_URI=file:///home/cat/Workspace/driver_ws/src/livox_ros_driver2/config/cyclonedds_large_message.xml
+ros2 launch livox_ros_driver2 msg_multi_MID360_launch.py model:=mid360s
+```
+
 ### 实际结论和注意事项
 
 1. 对这条 merged lidar 流，继续保持 `SensorDataQoS()` 是合理的默认选择。
@@ -109,6 +124,7 @@ ros2 launch livox_ros_driver2 msg_multi_MID360_launch.py
 3. 在上述配置下，**C++ ROS2 订阅端** 已验证可以稳定接近 `10Hz`。
 4. **Python 订阅大 `CustomMsg`** 仍然可能明显偏慢，因此性能敏感的下游建议使用 C++ 节点。
 5. 如果 socket buffer 没有真正持久化成功，系统重启后会回到默认内核值，此时 merge 订阅频率会再次下降。
+6. MID360S 的配置文件主要用于对齐 Livox-SDK2 的 `Mid360s` 配置入口；ROS driver 自身仍主要读取 `lidar_configs` 中的 IP 和外参。
 
 ## Compile Command
 ```shell
