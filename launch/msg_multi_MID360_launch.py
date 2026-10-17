@@ -1,5 +1,6 @@
 import os
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -22,12 +23,23 @@ cur_config_path = cur_path + '../config'
 
 
 def launch_setup(context, *args, **kwargs):
-    model = LaunchConfiguration('model').perform(context)
-    config_file = {
-        'mid360': 'multi_MID360_config.json',
-        'mid360s': 'multi_MID360s_config.json',
-    }[model]
-    user_config_path = os.path.join(cur_config_path, config_file)
+    user_config_path = LaunchConfiguration('user_config_path').perform(context)
+    if user_config_path:
+        user_config_path = os.path.expanduser(os.path.expandvars(user_config_path))
+        if not os.path.isabs(user_config_path):
+            user_config_path = os.path.join(
+                get_package_share_directory('livox_ros_driver2'), 'config', user_config_path
+            )
+        user_config_path = os.path.abspath(user_config_path)
+    else:
+        model = LaunchConfiguration('model').perform(context)
+        config_file = {
+            'mid360': 'multi_MID360_config.json',
+            'mid360s': 'multi_MID360s_config.json',
+        }[model]
+        user_config_path = os.path.join(cur_config_path, config_file)
+    if not os.path.isfile(user_config_path):
+        raise RuntimeError(f'Livox configuration file not found: {user_config_path}')
 
     livox_ros2_params = [
         {"xfer_format": xfer_format},
@@ -60,6 +72,12 @@ def generate_launch_description():
             default_value='mid360',
             choices=['mid360', 'mid360s'],
             description='LiDAR config profile: mid360 or mid360s.'
+        ),
+        DeclareLaunchArgument(
+            'user_config_path',
+            default_value='',
+            description='Optional JSON path: relative to livox_ros_driver2/config/ or absolute; '
+                        'empty selects the model default.'
         ),
         OpaqueFunction(function=launch_setup),
     ])
